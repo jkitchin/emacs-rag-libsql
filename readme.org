@@ -1,0 +1,840 @@
+#+TITLE: Emacs RAG with LibSQL
+#+AUTHOR: John Kitchin
+#+DATE: 2025-10-03
+
+* Overview
+
+=emacs-rag-libsql= is a complete Retrieval-Augmented Generation (RAG) system designed for Emacs integration. It provides semantic search capabilities over your local documents using vector embeddings and advanced two-stage reranking for improved relevance.
+
+The system consists of two main components:
+
+1. *Python FastAPI Server* (=emacs-rag-server=) - A REST API service providing document indexing, vector search, and reranking
+2. *Emacs Lisp Package* (=emacs-rag=) - An Emacs package for server management, file indexing, and search interface
+
+** Why This Matters
+
+Traditional text search finds what you *type*. Semantic search finds what you *mean*.
+
+- Search for "machine learning algorithms" and find documents about "neural networks" and "deep learning"
+- Find relevant content even when different terminology is used
+- Navigate directly to the most relevant sections in your notes
+- Two-stage retrieval ensures both speed and accuracy
+
+* Features
+
+** 🔍 Semantic Vector Search
+
+- *Vector Embeddings*: Documents are converted to high-dimensional vectors that capture semantic meaning
+- *Cosine Similarity*: Find documents by conceptual similarity, not just keyword matching
+- *Fast Retrieval*: Efficient vector indexing using LibSQL with vector extension support
+- *Configurable Models*: Choose from multiple embedding models based on your needs
+
+** 🎯 Two-Stage Reranking
+
+#+begin_src
+Stage 1: Fast Bi-Encoder Retrieval
+  ├─ Encode query → embedding vector
+  ├─ Vector search → Top-K candidates (e.g., K=20)
+  └─ Fast but approximate ranking
+
+Stage 2: Precise Cross-Encoder Reranking
+  ├─ Score each query-document pair directly
+  ├─ Re-sort by cross-encoder scores
+  └─ Return Top-N results (N=user limit)
+#+end_src
+
+This approach combines the *speed* of vector search with the *accuracy* of cross-encoder scoring.
+
+** 📝 Smart Document Processing
+
+- *Automatic Chunking*: Documents split into overlapping chunks with configurable size
+- *Line Number Tracking*: Navigate directly to the exact line in your files
+- *Metadata Support*: Attach custom metadata (author, tags, etc.) to indexed documents
+- *Batch Processing*: Efficient embedding generation in batches
+- *Multiple File Types*: Extensible to support any text-based format (default: org-mode)
+
+** 🔄 Seamless Emacs Integration
+
+- *Auto-indexing*: Automatically reindex files when you save them
+- *Direct Navigation*: Jump straight to relevant lines in your documents
+- *Transient Menu*: Beautiful, organized interface for all operations
+- *Ivy Integration*: Enhanced search result selection (with fallback to completing-read)
+- *Async Operations*: Non-blocking directory indexing
+- *Server Lifecycle*: Automatic server management - starts when needed
+
+** 🗄️ LibSQL Backend
+
+- *SQL + Vectors*: Combines the power of SQL with vector similarity search
+- *Efficient Storage*: Separate tables for documents and embeddings
+- *Foreign Key Constraints*: Data integrity with cascading deletes
+- *Fallback Support*: Works even without vector extension (slower but functional)
+- *Local First*: Your data stays on your machine
+
+** ⚙️ Highly Configurable
+
+All aspects are configurable through environment variables or Emacs customization:
+
+- Chunk size and overlap
+- Embedding models (sentence-transformers)
+- Reranking models (cross-encoder)
+- Search parameters
+- File extensions to index
+- Database location
+- Server settings
+
+* Architecture
+
+** System Overview
+
+#+begin_src
+┌─────────────────────────────────────────────────────┐
+│                    Emacs Client                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────┐ │
+│  │   Server     │  │   Indexing   │  │   Search   │ │
+│  │  Management  │  │   Commands   │  │  Interface │ │
+│  └──────────────┘  └──────────────┘  └────────────┘ │
+└─────────────────────────────────────────────────────┘
+                          │
+                    HTTP/REST API
+                          │
+┌─────────────────────────────────────────────────────┐
+│              Python FastAPI Server                   │
+│  ┌──────────────────────────────────────────────┐  │
+│  │              API Routes                       │  │
+│  │  /index  /search/vector  /files  /stats      │  │
+│  └──────────────────────────────────────────────┘  │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────┐  │
+│  │ File Service │  │Search Service│  │   Stats  │  │
+│  └──────────────┘  └──────────────┘  └──────────┘  │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────┐  │
+│  │   Chunking   │  │  Embeddings  │  │ Reranker │  │
+│  └──────────────┘  └──────────────┘  └──────────┘  │
+│  ┌──────────────────────────────────────────────┐  │
+│  │      LibSQL Database with Vector Storage     │  │
+│  └──────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────┘
+#+end_src
+
+** Database Schema
+
+*** Documents Table
+
+Stores text chunks with metadata and line tracking:
+
+#+begin_src sql
+CREATE TABLE documents (
+    id TEXT PRIMARY KEY,              -- {path}:{chunk_index}
+    source_path TEXT NOT NULL,        -- Absolute file path
+    chunk_index INTEGER NOT NULL,     -- 0-based chunk position
+    line_number INTEGER NOT NULL,     -- Starting line (1-based)
+    content TEXT NOT NULL,            -- Chunk text
+    chunk_size INTEGER NOT NULL,      -- Actual character count
+    chunk_total INTEGER NOT NULL,     -- Total chunks for this file
+    metadata JSON,                    -- Custom metadata as JSON
+    created_at INTEGER,
+    updated_at INTEGER
+);
+#+end_src
+
+*** Embeddings Table
+
+Stores vector embeddings linked to documents:
+
+#+begin_src sql
+CREATE TABLE embeddings (
+    id TEXT PRIMARY KEY,              -- Same as documents.id
+    vector BLOB NOT NULL,             -- Float32 vector
+    model TEXT NOT NULL,              -- Embedding model identifier
+    created_at INTEGER,
+    FOREIGN KEY (id) REFERENCES documents(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_embeddings_vector ON embeddings(vector) USING vector_cosine;
+#+end_src
+
+** ML Models
+
+*** Default Embedding Model
+
+*Model*: =sentence-transformers/all-MiniLM-L6-v2=
+
+- Dimensions: 384
+- Size: ~80MB
+- Speed: Very fast inference
+- Quality: Good general-purpose semantic similarity
+- Training: MS MARCO passage ranking dataset
+
+*** Default Reranker Model
+
+*Model*: =cross-encoder/ms-marco-MiniLM-L-6-v2=
+
+- Size: ~90MB
+- Speed: Moderate (only applied to top-K candidates)
+- Quality: Significantly better than distance metrics alone
+- Training: MS MARCO passage reranking dataset
+
+* Installation
+
+** Prerequisites
+
+- Python 3.10 or higher
+- Emacs 27.1 or higher
+- =uv= (recommended) or =pip= for Python dependencies
+- =transient= package for Emacs (usually included with modern Emacs)
+
+** Install Python Server
+
+#+begin_src bash
+# Navigate to server directory
+cd emacs-rag-libsql/emacs-rag-server
+
+# Install with uv (recommended)
+uv sync
+
+# Or install with pip
+pip install -e .
+
+# Verify installation
+emacs-rag-server --help
+#+end_src
+
+** Install Emacs Package
+
+Add to your Emacs configuration:
+
+#+begin_src emacs-lisp
+;; Add to load path
+(add-to-list 'load-path "/Users/jkitchin/Dropbox/emacs/user/emacs-rag-libsql/emacs-rag/")
+
+;; Load the package
+(require 'emacs-rag)
+
+;; Optional: Set custom database path
+(setq emacs-rag-db-path "/Users/jkitchin/Dropbox/emacs/cache/rag-database")
+
+;; Optional: Configure indexed file extensions
+(setq emacs-rag-indexed-extensions '("org" "txt" "md"))
+
+;; Optional: Disable auto-indexing on save
+(setq emacs-rag-auto-index-on-save nil)
+#+end_src
+
+#+RESULTS:
+
+
+** How do i force it to reload after changing the files?
+
+#+begin_src emacs-lisp
+;; Load the specific file with full path
+(load-file (expand-file-name "emacs-rag/emacs-rag-server.el" default-directory))
+(load-file (expand-file-name "emacs-rag/emacs-rag-index.el" default-directory))
+(load-file (expand-file-name "emacs-rag/emacs-rag-search.el" default-directory))
+(load-file (expand-file-name "emacs-rag/emacs-rag.el" default-directory))
+
+(emacs-rag-stop-server)
+(emacs-rag-start-server)
+#+end_src
+
+#+RESULTS:
+: [nil 26848 6562 45580 nil #[nil ((if (emacs-rag-server-running-p) (message "Emacs RAG server started successfully") (message "Warning: Server may not have started properly"))) (t)] nil nil 0 nil]
+
+* Quick Start Guide
+
+** 1. Start the Server
+
+#+begin_src emacs-lisp
+M-x emacs-rag-start-server
+#+end_src
+
+Or from the main menu:
+
+#+begin_src emacs-lisp
+M-x emacs-rag-menu
+;; Press 'a' to start server
+#+end_src
+
+The server will start on =http://127.0.0.1:8765= by default.
+
+** 2. Index Your Documents
+
+*** Index Current Buffer
+
+#+begin_src emacs-lisp
+M-x emacs-rag-index-buffer
+#+end_src
+
+This indexes the current buffer, including any unsaved changes.
+
+*** Index a Directory
+
+#+begin_src emacs-lisp
+M-x emacs-rag-index-directory
+;; Select directory to index
+#+end_src
+
+This will recursively index all eligible files (based on =emacs-rag-indexed-extensions=).
+
+*** Index a Specific File
+
+#+begin_src emacs-lisp
+M-x emacs-rag-index-file
+;; Select file to index
+#+end_src
+
+** 3. Search Your Documents
+
+#+begin_src emacs-lisp
+M-x emacs-rag-search-vector
+;; Enter your search query: "machine learning concepts"
+#+end_src
+
+Results will be displayed with scores. Select one to navigate directly to that location in the file.
+
+** 4. Other Useful Commands
+
+*** Search Word at Point
+
+#+begin_src emacs-lisp
+M-x emacs-rag-search-at-point
+#+end_src
+
+Searches for the word under cursor or selected region.
+
+*** View Statistics
+
+#+begin_src emacs-lisp
+M-x emacs-rag-stats
+#+end_src
+
+Shows total indexed chunks and files.
+
+*** Debug Information
+
+#+begin_src emacs-lisp
+M-x emacs-rag-debug
+#+end_src
+
+Displays comprehensive diagnostic information.
+
+** reload
+
+#+BEGIN_SRC emacs-lisp
+;; Load the specific file with full path
+(load-file (expand-file-name "emacs-rag/emacs-rag-server.el" default-directory))
+(load-file (expand-file-name "emacs-rag/emacs-rag-index.el" default-directory))
+(load-file (expand-file-name "emacs-rag/emacs-rag-search.el" default-directory))
+(load-file (expand-file-name "emacs-rag/emacs-rag.el" default-directory))
+
+(emacs-rag-stop-server)
+(emacs-rag-start-server)
+#+END_SRC
+
+#+RESULTS:
+: [nil 26848 10958 638265 nil #[nil ((if (emacs-rag-server-running-p) (message "Emacs RAG server started successfully") (message "Warning: Server may not have started properly"))) (t)] nil nil 0 nil]
+
+
+* Usage Examples
+
+** Example 1: Research Notes
+
+You have a directory of research notes in org-mode:
+
+#+begin_src emacs-lisp
+;; Index your research directory
+M-x emacs-rag-index-directory
+;; → ~/Documents/research/
+
+;; Search across all notes
+M-x emacs-rag-search-vector
+;; Query: "neural network optimization techniques"
+
+;; Results show relevant sections from multiple files
+;; Select one to jump directly to that content
+#+end_src
+
+** Example 2: Code Documentation
+
+Search across your project documentation:
+
+#+begin_src emacs-lisp
+;; Add markdown files to indexed types
+(setq emacs-rag-indexed-extensions '("org" "md" "txt"))
+
+;; Index docs directory
+M-x emacs-rag-index-directory
+;; → ~/projects/myapp/docs/
+
+;; Search for specific topics
+M-x emacs-rag-search-vector
+;; Query: "authentication flow"
+#+end_src
+
+** Example 3: Journal Entries
+
+Search your daily journal by topic:
+
+#+begin_src emacs-lisp
+;; Auto-index enabled - journals update as you save
+(setq emacs-rag-auto-index-on-save t)
+
+;; Search across all journal entries
+M-x emacs-rag-search-vector
+;; Query: "project planning discussions"
+
+;; Find relevant journal entries even if they use different wording
+#+end_src
+
+* Configuration
+
+** Emacs Configuration Variables
+
+*** Server Settings
+
+#+begin_src emacs-lisp
+(setq emacs-rag-server-host "127.0.0.1")    ; Server hostname
+(setq emacs-rag-server-port 8765)           ; Server port
+(setq emacs-rag-db-path "~/.emacs-rag/libsql")  ; Database location
+#+end_src
+
+*** Indexing Settings
+
+#+begin_src emacs-lisp
+(setq emacs-rag-indexed-extensions '("org" "txt" "md"))  ; File types
+(setq emacs-rag-auto-index-on-save t)       ; Auto-reindex on save
+#+end_src
+
+*** Search Settings
+
+#+begin_src emacs-lisp
+(setq emacs-rag-search-limit 5)             ; Default result count
+(setq emacs-rag-search-enable-rerank t)     ; Enable reranking
+(setq emacs-rag-result-display-width 80)    ; Result text width
+#+end_src
+
+** Server Configuration (Environment Variables)
+
+*** Database
+
+#+begin_src bash
+export EMACS_RAG_DB_PATH="$HOME/.emacs-rag/libsql"
+#+end_src
+
+*** Chunking
+
+#+begin_src bash
+export EMACS_RAG_CHUNK_SIZE="800"           # Characters per chunk
+export EMACS_RAG_CHUNK_OVERLAP="100"        # Overlap between chunks
+#+end_src
+
+*** Models
+
+#+begin_src bash
+# Embedding model
+export EMACS_RAG_EMBEDDING_MODEL="sentence-transformers/all-MiniLM-L6-v2"
+
+# Alternative: Higher quality but slower
+# export EMACS_RAG_EMBEDDING_MODEL="sentence-transformers/all-mpnet-base-v2"
+
+# Reranking model
+export EMACS_RAG_RERANK_MODEL="cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+# Enable/disable reranking
+export EMACS_RAG_RERANK_ENABLED="true"
+
+# Number of candidates to rerank
+export EMACS_RAG_RERANK_TOP_K="20"
+#+end_src
+
+*** Server
+
+#+begin_src bash
+export EMACS_RAG_HOST="127.0.0.1"
+export EMACS_RAG_PORT="8765"
+#+end_src
+
+* API Reference
+
+** REST API Endpoints
+
+*** POST /index
+
+Index a file with automatic chunking and embedding.
+
+*Request:*
+#+begin_src json
+{
+  "path": "/absolute/path/to/file.org",
+  "content": "optional content override",
+  "metadata": {
+    "author": "John Doe",
+    "tags": ["research", "ML"]
+  }
+}
+#+end_src
+
+*Response:*
+#+begin_src json
+{
+  "path": "/absolute/path/to/file.org",
+  "chunks_indexed": 15
+}
+#+end_src
+
+*** GET /search/vector
+
+Semantic similarity search.
+
+*Parameters:*
+- =query= (required): Search text
+- =limit= (optional, default: 5): Max results
+- =rerank= (optional, default: true): Enable reranking
+
+*Response:*
+#+begin_src json
+{
+  "results": [
+    {
+      "source_path": "/path/to/file.org",
+      "chunk_index": 2,
+      "line_number": 45,
+      "content": "Relevant text content...",
+      "score": 0.8534
+    }
+  ]
+}
+#+end_src
+
+*** DELETE /files
+
+Remove all chunks for a file.
+
+*Parameters:*
+- =path= (required): Absolute file path
+
+*Response:*
+#+begin_src json
+{
+  "path": "/path/to/file.org",
+  "deleted": true
+}
+#+end_src
+
+*** GET /stats
+
+Database statistics.
+
+*Response:*
+#+begin_src json
+{
+  "total_chunks": 1234,
+  "total_unique_files": 56,
+  "sample_chunk": {...}
+}
+#+end_src
+
+*** GET /health
+
+Health check.
+
+*Response:*
+#+begin_src json
+{
+  "status": "ok"
+}
+#+end_src
+
+** Emacs Commands
+
+*** Server Management
+
+| Command                        | Description                  |
+|--------------------------------+------------------------------|
+| =emacs-rag-start-server=       | Start the RAG server         |
+| =emacs-rag-stop-server=        | Stop the RAG server          |
+| =emacs-rag-restart-server=     | Restart the RAG server       |
+| =emacs-rag-show-server-buffer= | Show server log buffer       |
+
+*** Indexing
+
+| Command                              | Description                      |
+|--------------------------------------+----------------------------------|
+| =emacs-rag-index-file=               | Index a specific file            |
+| =emacs-rag-index-buffer=             | Index current buffer             |
+| =emacs-rag-index-directory=          | Recursively index directory      |
+| =emacs-rag-reindex-all-open-buffers= | Reindex all open eligible buffers|
+| =emacs-rag-delete-file=              | Remove file from index           |
+| =emacs-rag-delete-buffer=            | Remove current buffer from index |
+
+*** Search
+
+| Command                              | Description                     |
+|--------------------------------------+---------------------------------|
+| =emacs-rag-search-vector=            | Semantic vector search          |
+| =emacs-rag-search-at-point=          | Search word/region at point     |
+| =emacs-rag-search-vector-with-history= | Search with query history     |
+| =emacs-rag-stats=                    | Show database statistics        |
+
+*** Utilities
+
+| Command                    | Description                     |
+|----------------------------+---------------------------------|
+| =emacs-rag-menu=           | Open transient menu             |
+| =emacs-rag-debug=          | Show debug information          |
+| =emacs-rag-quick-start=    | Show quick start guide          |
+| =emacs-rag-delete-database=| Delete entire database          |
+
+* Advanced Usage
+
+** Custom Metadata
+
+Add custom metadata when indexing:
+
+#+begin_src emacs-lisp
+(emacs-rag-index-file
+ "~/notes/research.org"
+ '((author . "John Doe")
+   (project . "ML Research")
+   (tags . ("neural-networks" "optimization"))))
+#+end_src
+
+** Programmatic Search
+
+#+begin_src emacs-lisp
+(let* ((results (emacs-rag--request
+                 "GET" "/search/vector" nil
+                 '((query . "machine learning")
+                   (limit . 10)
+                   (rerank . "true"))))
+       (top-result (car (alist-get 'results results))))
+  ;; Process results programmatically
+  (message "Top result: %s (score: %.3f)"
+           (alist-get 'source_path top-result)
+           (alist-get 'score top-result)))
+#+end_src
+
+** Batch Indexing with Progress
+
+#+begin_src emacs-lisp
+(defun my-index-project ()
+  "Index all org files in current project."
+  (interactive)
+  (when-let ((project-root (project-root (project-current))))
+    (message "Indexing project: %s" project-root)
+    (emacs-rag-index-directory project-root)))
+#+end_src
+
+** Different Embedding Models
+
+For better quality (but slower):
+
+#+begin_src bash
+export EMACS_RAG_EMBEDDING_MODEL="sentence-transformers/all-mpnet-base-v2"
+emacs-rag-server serve
+#+end_src
+
+For multilingual support:
+
+#+begin_src bash
+export EMACS_RAG_EMBEDDING_MODEL="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+emacs-rag-server serve
+#+end_src
+
+* Troubleshooting
+
+** Server Won't Start
+
+#+begin_src emacs-lisp
+;; Check server buffer for errors
+M-x emacs-rag-show-server-buffer
+
+;; Check debug info
+M-x emacs-rag-debug
+
+;; Verify Python installation
+M-x shell-command RET python3 --version
+#+end_src
+
+** No Search Results
+
+- Verify files are indexed: =M-x emacs-rag-stats=
+- Check if server is running: =M-x emacs-rag-debug=
+- Try disabling reranking temporarily
+- Increase search limit with prefix argument: =C-u 10 M-x emacs-rag-search-vector=
+
+** Poor Search Quality
+
+- Enable reranking: =(setq emacs-rag-search-enable-rerank t)=
+- Increase reranking pool: =export EMACS_RAG_RERANK_TOP_K=30=
+- Try a different embedding model (see Advanced Usage)
+- Adjust chunk size: =export EMACS_RAG_CHUNK_SIZE=1000=
+
+** Indexing Fails
+
+- Check file permissions
+- Verify file encoding (UTF-8 recommended)
+- Check available disk space
+- Review server logs: =M-x emacs-rag-show-server-buffer=
+
+** High Memory Usage
+
+- Use a smaller embedding model
+- Reduce chunk overlap: =export EMACS_RAG_CHUNK_OVERLAP=50=
+- Clear old indexes: =M-x emacs-rag-delete-database=
+
+* Performance Considerations
+
+** Indexing Speed
+
+- *Chunk size*: Larger chunks = fewer embeddings = faster indexing
+- *Batch size*: Currently fixed at 8 documents per batch
+- *Model*: =all-MiniLM-L6-v2= is the fastest default model
+
+** Search Speed
+
+- *Vector search*: Very fast (milliseconds)
+- *Reranking*: Slower but only applied to top-K candidates
+- *Adjust rerank_top_k*: Lower values = faster search, potentially less accurate
+
+** Storage
+
+- *Embeddings*: 384 floats × 4 bytes = ~1.5KB per chunk
+- *Text*: Depends on chunk size (default 800 chars ≈ 800 bytes)
+- *Typical*: ~2-3KB per chunk including metadata
+
+* Development
+
+** Project Structure
+
+#+begin_src
+emacs-rag-libsql/
+├── emacs-rag/                    # Emacs Lisp package
+│   ├── emacs-rag.el              # Main entry point + menu
+│   ├── emacs-rag-server.el       # Server management
+│   ├── emacs-rag-index.el        # Indexing commands
+│   └── emacs-rag-search.el       # Search interface
+├── emacs-rag-server/             # Python FastAPI server
+│   ├── src/emacs_rag_server/
+│   │   ├── main.py               # FastAPI app
+│   │   ├── cli.py                # CLI interface
+│   │   ├── api/routes.py         # API endpoints
+│   │   ├── models/               # Database, embeddings, schemas
+│   │   ├── services/             # Business logic
+│   │   └── utils/                # Utilities
+│   ├── pyproject.toml
+│   └── README.org
+├── software-design.org           # Design documentation
+└── readme.org                    # This file
+#+end_src
+
+** Running Tests
+
+#+begin_src bash
+cd emacs-rag-server
+uv sync --dev
+uv run pytest
+#+end_src
+
+** Development Mode
+
+Start server with auto-reload:
+
+#+begin_src bash
+emacs-rag-server serve --reload
+#+end_src
+
+** Interactive API Documentation
+
+When the server is running:
+
+- Swagger UI: =http://127.0.0.1:8765/docs=
+- ReDoc: =http://127.0.0.1:8765/redoc=
+
+* Comparison with Other Tools
+
+** vs. Traditional Grep/Ripgrep
+
+| Feature              | emacs-rag-libsql     | grep/ripgrep        |
+|----------------------+----------------------+---------------------|
+| Search Type          | Semantic             | Keyword/Regex       |
+| Finds Concepts       | ✓                    | ✗                   |
+| Speed                | Fast (indexed)       | Very Fast           |
+| Setup Required       | Yes                  | No                  |
+| Memory Usage         | Moderate             | Low                 |
+| Ranking              | ML-based             | None                |
+
+** vs. Org-roam
+
+| Feature              | emacs-rag-libsql     | org-roam            |
+|----------------------+----------------------+---------------------|
+| Search Type          | Semantic full-text   | Links + Tags        |
+| Structure Required   | No                   | Yes (IDs, links)    |
+| Content Search       | ✓ Advanced           | Basic               |
+| Relationship Mapping | ✗                    | ✓                   |
+| Backlinks            | ✗                    | ✓                   |
+
+** vs. Deft
+
+| Feature              | emacs-rag-libsql     | Deft                |
+|----------------------+----------------------+---------------------|
+| Search Type          | Semantic vector      | Keyword             |
+| Relevance Ranking    | ML-based             | Frequency           |
+| File Navigation      | Line-level           | File-level          |
+| Performance          | Indexed (fast)       | Live search         |
+
+* Future Enhancements
+
+Potential features for future development:
+
+- [ ] PDF/DOCX indexing (via docling)
+- [ ] Multiple collection support
+- [ ] Project-scoped search
+- [ ] org-db integration
+- [ ] Metadata-based filtering in search
+- [ ] Incremental indexing (detect changes)
+- [ ] Search result caching
+- [ ] Export/import database
+- [ ] Remote server support
+- [ ] Date-based filtering
+- [ ] Duplicate detection
+- [ ] Integration with GPT for RAG
+
+* License
+
+This project is licensed under the terms specified in the repository.
+
+* Contributing
+
+Contributions are welcome! Please:
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests if applicable
+5. Submit a pull request
+
+* Support
+
+For issues, questions, or suggestions:
+
+- Check the troubleshooting section above
+- Review =M-x emacs-rag-debug= output
+- Check server logs with =M-x emacs-rag-show-server-buffer=
+- File an issue on the project repository
+
+* Acknowledgments
+
+This project uses:
+
+- [[https://fastapi.tiangolo.com/][FastAPI]] - Modern web framework for Python
+- [[https://github.com/tursodatabase/libsql][LibSQL]] - SQLite fork with vector support
+- [[https://www.sbert.net/][Sentence Transformers]] - State-of-the-art text embeddings
+- [[https://magit.vc/manual/transient/][Transient]] - Emacs transient command interface
+- [[https://github.com/abo-abo/swiper][Ivy]] - Completion framework for Emacs (optional)
+
+* References
+
+- [[file:software-design.org][Software Design Document]] - Detailed architecture and implementation
+- [[file:emacs-rag-server/README.org][Server README]] - Python server documentation
+- [[https://www.sbert.net/][Sentence-BERT Documentation]]
+- [[https://github.com/tursodatabase/libsql][LibSQL Documentation]]
+- [[https://fastapi.tiangolo.com/][FastAPI Documentation]]

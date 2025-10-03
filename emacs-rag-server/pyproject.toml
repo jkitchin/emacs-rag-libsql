@@ -1,0 +1,41 @@
+[project]
+name = "emacs-rag-server"
+version = "0.1.0"
+description = "FastAPI server for Emacs RAG with LibSQL backend"
+authors = [
+    {name = "John Kitchin", email = "jkitchin@andrew.cmu.edu"}
+]
+readme = {file = "README.org", content-type = "text/plain"}
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "libsql-client>=0.3.0",
+    "sentence-transformers>=2.6.0",
+    "pydantic>=2.6.0",
+    "python-multipart>=0.0.9",
+    "typer>=0.12.0",
+    "watchfiles>=0.21.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx>=0.27.0",
+]
+
+[project.scripts]
+emacs-rag-server = "emacs_rag_server.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/emacs_rag_server"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"

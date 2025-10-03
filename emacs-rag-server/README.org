@@ -1,0 +1,395 @@
+#+TITLE: Emacs RAG Server
+#+AUTHOR: John Kitchin
+#+DATE: 2025-10-03
+
+* Overview
+
+=emacs-rag-server= is a FastAPI-based REST API server that provides semantic search and retrieval-augmented generation (RAG) capabilities for Emacs integration. It uses LibSQL as the storage backend with vector similarity search for efficient retrieval.
+
+** Key Features
+
+- 🔍 *Semantic Vector Search* - Find documents by meaning, not just keywords
+- 🎯 *Two-Stage Reranking* - Bi-encoder retrieval + cross-encoder reranking for improved relevance
+- 📝 *Automatic Chunking* - Split documents with configurable size and overlap
+- 📍 *Line Number Tracking* - Navigate directly to relevant sections in Emacs
+- 🗄️ *LibSQL Backend* - Efficient vector storage with SQL capabilities
+- ⚡ *Fast Embeddings* - Sentence-transformers with batch processing
+- 🔧 *Configurable* - Environment variables for all settings
+
+* Installation
+
+** Prerequisites
+
+- Python 3.10 or higher
+- =uv= (recommended) or =pip=
+
+** Install with uv
+
+#+begin_src bash
+# Clone the repository
+cd emacs-rag-libsql/emacs-rag-server
+
+# Install dependencies
+uv sync
+
+# Verify installation
+uv run emacs-rag-server --help
+#+end_src
+
+** Install with pip
+
+#+begin_src bash
+cd emacs-rag-libsql/emacs-rag-server
+pip install -e .
+#+end_src
+
+* Quick Start
+
+** Start the Server
+
+#+begin_src bash
+# Using uv
+uv run emacs-rag-server serve
+
+# Or if installed with pip
+emacs-rag-server serve
+#+end_src
+
+The server will start on =http://127.0.0.1:8765= by default.
+
+** View Configuration
+
+#+begin_src bash
+emacs-rag-server config
+#+end_src
+
+** Initialize Database
+
+#+begin_src bash
+emacs-rag-server init-db
+#+end_src
+
+* Usage
+
+** API Endpoints
+
+*** POST /index - Index a File
+
+Index a file with automatic chunking and embedding generation.
+
+#+begin_src bash
+curl -X POST http://127.0.0.1:8765/index \
+  -H "Content-Type: application/json" \
+  -d '{
+    "path": "/path/to/document.org",
+    "metadata": {
+      "author": "John Doe",
+      "tags": ["notes", "research"]
+    }
+  }'
+#+end_src
+
+*Response:*
+#+begin_src json
+{
+  "path": "/absolute/path/to/document.org",
+  "chunks_indexed": 15
+}
+#+end_src
+
+*** GET /search/vector - Semantic Search
+
+Perform vector similarity search with optional reranking.
+
+#+begin_src bash
+curl "http://127.0.0.1:8765/search/vector?query=machine%20learning&limit=5&rerank=true"
+#+end_src
+
+*Response:*
+#+begin_src json
+{
+  "results": [
+    {
+      "source_path": "/path/to/document.org",
+      "chunk_index": 2,
+      "line_number": 45,
+      "content": "Machine learning is a subset of artificial intelligence...",
+      "score": 0.8534
+    }
+  ]
+}
+#+end_src
+
+*** DELETE /files - Remove File
+
+Delete all chunks for a specific file.
+
+#+begin_src bash
+curl -X DELETE "http://127.0.0.1:8765/files?path=/path/to/document.org"
+#+end_src
+
+*** GET /stats - Database Statistics
+
+Get information about the indexed corpus.
+
+#+begin_src bash
+curl http://127.0.0.1:8765/stats
+#+end_src
+
+*Response:*
+#+begin_src json
+{
+  "total_chunks": 1234,
+  "total_unique_files": 56,
+  "sample_chunk": {
+    "ids": "/path/to/file.org:0",
+    "documents": "Sample content...",
+    "metadatas": {...}
+  }
+}
+#+end_src
+
+*** GET /health - Health Check
+
+Check server status.
+
+#+begin_src bash
+curl http://127.0.0.1:8765/health
+#+end_src
+
+** Interactive Documentation
+
+Once the server is running, visit:
+
+- Swagger UI: =http://127.0.0.1:8765/docs=
+- ReDoc: =http://127.0.0.1:8765/redoc=
+
+* Configuration
+
+All configuration is done via environment variables.
+
+** Environment Variables
+
+| Variable                    | Default                                  | Description                        |
+|-----------------------------+------------------------------------------+------------------------------------|
+| =EMACS_RAG_DB_PATH=         | =~/.emacs-rag/libsql=                    | Database directory path            |
+| =EMACS_RAG_CHUNK_SIZE=      | =800=                                    | Max characters per chunk           |
+| =EMACS_RAG_CHUNK_OVERLAP=   | =100=                                    | Overlap between chunks             |
+| =EMACS_RAG_EMBEDDING_MODEL= | =sentence-transformers/all-MiniLM-L6-v2= | Embedding model ID                 |
+| =EMACS_RAG_RERANK_MODEL=    | =cross-encoder/ms-marco-MiniLM-L-6-v2=   | Cross-encoder reranking model      |
+| =EMACS_RAG_RERANK_ENABLED=  | =true=                                   | Enable reranking (true/false)      |
+| =EMACS_RAG_RERANK_TOP_K=    | =20=                                     | Candidates before reranking        |
+| =EMACS_RAG_HOST=            | =127.0.0.1=                              | Server bind address                |
+| =EMACS_RAG_PORT=            | =8765=                                   | Server port                        |
+
+** Example Configuration
+
+#+begin_src bash
+export EMACS_RAG_DB_PATH="$HOME/my-rag-db"
+export EMACS_RAG_CHUNK_SIZE="1000"
+export EMACS_RAG_CHUNK_OVERLAP="150"
+export EMACS_RAG_EMBEDDING_MODEL="sentence-transformers/all-mpnet-base-v2"
+export EMACS_RAG_RERANK_ENABLED="true"
+
+emacs-rag-server serve
+#+end_src
+
+* Architecture
+
+** Components
+
+*** Database Layer (LibSQL)
+
+- =documents= table: Stores text chunks with metadata
+- =embeddings= table: Stores vector embeddings
+- Vector similarity search using cosine distance
+- Foreign key constraints for data integrity
+
+*** Models
+
+- *Embedding Model*: Sentence-transformers bi-encoder
+  - Default: =all-MiniLM-L6-v2= (384 dimensions)
+  - Fast inference, good general-purpose quality
+  - Normalized embeddings for cosine similarity
+
+- *Reranker Model*: Cross-encoder for two-stage retrieval
+  - Default: =ms-marco-MiniLM-L-6-v2=
+  - Scores query-document pairs directly
+  - Higher accuracy than distance metrics alone
+
+*** Services
+
+- *File Service*: Handles indexing, deletion, and chunking
+- *Search Service*: Vector search with optional reranking
+- *Stats Service*: Database statistics and metrics
+
+** Two-Stage Retrieval Pipeline
+
+#+begin_src
+Stage 1: Fast Bi-Encoder Retrieval
+  ├─ Encode query → embedding vector
+  ├─ Vector search → Top-K candidates (e.g., K=20)
+  └─ Fast but approximate ranking
+
+Stage 2: Precise Cross-Encoder Reranking
+  ├─ Score each query-document pair
+  ├─ Re-sort by cross-encoder scores
+  └─ Return Top-N results (N=user limit)
+#+end_src
+
+* Database Schema
+
+** Documents Table
+
+#+begin_src sql
+CREATE TABLE documents (
+    id TEXT PRIMARY KEY,              -- {path}:{chunk_index}
+    source_path TEXT NOT NULL,        -- Absolute file path
+    chunk_index INTEGER NOT NULL,     -- 0-based chunk position
+    line_number INTEGER NOT NULL,     -- Starting line (1-based)
+    content TEXT NOT NULL,            -- Chunk text
+    chunk_size INTEGER NOT NULL,      -- Actual character count
+    chunk_total INTEGER NOT NULL,     -- Total chunks for this file
+    metadata JSON,                    -- Custom metadata as JSON
+    created_at INTEGER DEFAULT (strftime('%s', 'now')),
+    updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+);
+
+CREATE INDEX idx_documents_path ON documents(source_path);
+CREATE INDEX idx_documents_chunk ON documents(source_path, chunk_index);
+#+end_src
+
+** Embeddings Table
+
+#+begin_src sql
+CREATE TABLE embeddings (
+    id TEXT PRIMARY KEY,              -- Same as documents.id
+    vector BLOB NOT NULL,             -- Float32 vector
+    model TEXT NOT NULL,              -- Embedding model identifier
+    created_at INTEGER DEFAULT (strftime('%s', 'now')),
+    FOREIGN KEY (id) REFERENCES documents(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_embeddings_vector ON embeddings(vector) USING vector_cosine;
+#+end_src
+
+* Development
+
+** Project Structure
+
+#+begin_src
+emacs-rag-server/
+├── src/
+│   └── emacs_rag_server/
+│       ├── __init__.py
+│       ├── main.py              # FastAPI app
+│       ├── cli.py               # Command-line interface
+│       ├── api/
+│       │   ├── __init__.py
+│       │   └── routes.py        # API endpoints
+│       ├── models/
+│       │   ├── __init__.py
+│       │   ├── database.py      # LibSQL interface
+│       │   ├── embeddings.py    # Embedding model wrapper
+│       │   ├── reranker.py      # Cross-encoder reranker
+│       │   └── schemas.py       # Pydantic models
+│       ├── services/
+│       │   ├── __init__.py
+│       │   ├── file_service.py       # File indexing
+│       │   ├── search_service.py     # Search operations
+│       │   └── stats_service.py      # Statistics
+│       └── utils/
+│           ├── __init__.py
+│           ├── chunking.py      # Text chunking
+│           └── config.py        # Configuration
+├── tests/                       # Unit tests
+├── pyproject.toml              # Project metadata
+└── README.org                  # This file
+#+end_src
+
+** Running Tests
+
+#+begin_src bash
+# Install dev dependencies
+uv sync --dev
+
+# Run tests
+uv run pytest
+#+end_src
+
+** Development Mode
+
+Start server with auto-reload:
+
+#+begin_src bash
+emacs-rag-server serve --reload
+#+end_src
+
+* Performance Considerations
+
+** Embedding Generation
+
+- Batch processing (8 documents per batch)
+- Lazy model loading (thread-safe)
+- Normalized embeddings (faster cosine similarity)
+
+** Search Optimization
+
+- Vector indexes for fast similarity search
+- Configurable reranking pool size (=rerank_top_k=)
+- Two-stage pipeline balances speed and quality
+
+** Database
+
+- Batch insertions (up to 5000 chunks)
+- Indexed columns for common queries
+- Foreign key constraints with cascading deletes
+
+* Troubleshooting
+
+** Server Won't Start
+
+#+begin_src bash
+# Check Python version (requires >=3.10)
+python --version
+
+# Verify uv is installed
+uv --version
+
+# Check if port is in use
+lsof -i :8765
+#+end_src
+
+** Indexing Fails
+
+- Verify file exists and is readable
+- Check file encoding (UTF-8 preferred)
+- Ensure sufficient disk space
+- Review server logs for errors
+
+** Poor Search Quality
+
+- Enable reranking: =EMACS_RAG_RERANK_ENABLED=true=
+- Increase candidate pool: =EMACS_RAG_RERANK_TOP_K=30=
+- Try different embedding model (e.g., =all-mpnet-base-v2=)
+- Adjust chunk size for your content type
+
+** Vector Extension Not Available
+
+If you see warnings about vector indexes, the LibSQL vector extension may not be available. The server will fall back to Python-based cosine distance calculation, which is slower but functional.
+
+* License
+
+This project is part of the emacs-rag-libsql package.
+
+* Contributing
+
+Contributions are welcome! Please see the main repository for contribution guidelines.
+
+* Links
+
+- Main Repository: [[../README.org]]
+- Software Design Document: [[../software-design.org]]
+- FastAPI Documentation: https://fastapi.tiangolo.com/
+- Sentence Transformers: https://www.sbert.net/
+- LibSQL: https://github.com/tursodatabase/libsql

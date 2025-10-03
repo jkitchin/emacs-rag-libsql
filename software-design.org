@@ -1,0 +1,1819 @@
+#+TITLE: Emacs RAG Software Design Document
+#+AUTHOR: Design extracted from emacs-rag-codex
+#+DATE: 2025-10-03
+
+* Executive Summary
+
+This document describes the architecture and implementation details of =emacs-rag=, a Retrieval-Augmented Generation (RAG) system designed for Emacs integration. The system consists of two main components:
+
+1. *Python FastAPI Server* (=emacs-rag-server=): A REST API service providing document indexing, vector search, and reranking capabilities
+2. *Emacs Lisp Client* (=emacs-rag=): An Emacs package providing server lifecycle management, indexing commands, and search interface
+
+The system enables semantic search over local text files (primarily Org-mode documents) using vector embeddings and two-stage reranking for improved relevance.
+
+* System Architecture
+
+** High-Level Architecture
+
+#+begin_src
+┌─────────────────────────────────────────────────────┐
+│                    Emacs Client                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────┐ │
+│  │   Server     │  │   Indexing   │  │   Search   │ │
+│  │  Management  │  │   Commands   │  │  Interface │ │
+│  └──────────────┘  └──────────────┘  └────────────┘ │
+└─────────────────────────────────────────────────────┘
+                          │
+                    HTTP/REST API
+                          │
+┌─────────────────────────────────────────────────────┐
+│              Python FastAPI Server                   │
+│  ┌──────────────────────────────────────────────┐  │
+│  │              API Routes                       │  │
+│  │  /index  /search/vector  /files  /stats      │  │
+│  └──────────────────────────────────────────────┘  │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────┐  │
+│  │ File Service │  │Search Service│  │   Stats  │  │
+│  └──────────────┘  └──────────────┘  └──────────┘  │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────┐  │
+│  │   Chunking   │  │  Embeddings  │  │ Reranker │  │
+│  └──────────────┘  └──────────────┘  └──────────┘  │
+│  ┌──────────────────────────────────────────────┐  │
+│  │          Vector Database (ChromaDB)           │  │
+│  │        → Replace with LibSQL/Vector Ext      │  │
+│  └──────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────┘
+#+end_src
+
+** Component Responsibilities
+
+*** Emacs Client Layer
+- Manage Python server process lifecycle (start/stop/status)
+- Provide interactive commands for indexing (buffer/file/directory)
+- Implement search interface with result selection (Ivy integration)
+- Handle auto-indexing on file save
+- Display server statistics and debug information
+- Provide transient menu for all operations
+
+*** Python Server Layer
+- Expose REST API endpoints for all operations
+- Manage document chunking with configurable size/overlap
+- Generate embeddings using sentence-transformer models
+- Implement two-stage retrieval + reranking pipeline
+- Persist vector embeddings and metadata
+- Provide health checks and statistics
+
+* Database Layer Design (Current: ChromaDB)
+
+** Current ChromaDB Schema
+
+*** Collections
+- Each collection is an isolated namespace for documents
+- Default collection name: =emacs-rag-docs=
+- Configurable via =EMACS_RAG_COLLECTION= environment variable
+
+*** Document Storage
+Each chunk is stored with:
+
+*Chunk ID Format:*
+#+begin_example
+{absolute_path}:{chunk_index}
+Example: /Users/john/notes.org:0
+#+end_example
+
+*Document Content:*
+- The actual text chunk (string)
+- Size determined by =chunk_size= configuration
+- May include overlap with adjacent chunks
+
+*Embeddings:*
+- Vector representation of document content
+- Dimensions determined by embedding model (e.g., 384 for all-MiniLM-L6-v2)
+- Generated once during indexing
+- Normalized for cosine similarity
+
+*Metadata Schema:*
+#+begin_src json
+{
+  "source_path": "/absolute/path/to/file.org",
+  "chunk_index": 0,
+  "line_number": 1,
+  "chunk_size": 450,
+  "chunk_total": 12,
+  // Additional custom metadata from IndexRequest
+  "author": "...",
+  "tags": [...]
+}
+#+end_src
+
+*** Operations
+
+*Add/Update Documents:*
+- Delete all existing chunks for a file path
+- Generate new chunks from updated content
+- Batch embed chunks (8 at a time for efficiency)
+- Store in ChromaDB batches (max 5000 per batch)
+
+*Delete Documents:*
+- Remove all chunks matching =source_path= metadata
+
+*Vector Search:*
+- Query with embedding vector
+- Return top-K results with metadata and distances
+- Distance = cosine distance (lower is better)
+
+*Text Search:*
+- Query with text pattern matching
+- Return chunks where document contains query
+- Return with metadata and match scores
+
+** Migration to LibSQL + Vector Extension
+
+*** Schema Design for LibSQL
+
+*Documents Table:*
+#+begin_src sql
+CREATE TABLE documents (
+  id TEXT PRIMARY KEY,              -- {path}:{chunk_index}
+  source_path TEXT NOT NULL,        -- Absolute file path
+  chunk_index INTEGER NOT NULL,     -- 0-based chunk position
+  line_number INTEGER NOT NULL,     -- Starting line (1-based)
+  content TEXT NOT NULL,            -- Chunk text
+  chunk_size INTEGER NOT NULL,      -- Actual character count
+  chunk_total INTEGER NOT NULL,     -- Total chunks for this file
+  metadata JSON,                    -- Custom metadata as JSON
+  created_at INTEGER DEFAULT (strftime('%s', 'now')),
+  updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+);
+
+CREATE INDEX idx_documents_path ON documents(source_path);
+CREATE INDEX idx_documents_chunk ON documents(source_path, chunk_index);
+#+end_src
+
+*Embeddings Table (Using Vector Extension):*
+#+begin_src sql
+CREATE TABLE embeddings (
+  id TEXT PRIMARY KEY,              -- Same as documents.id
+  vector BLOB NOT NULL,             -- Float32 vector (using libsql-vector)
+  model TEXT NOT NULL,              -- Embedding model identifier
+  created_at INTEGER DEFAULT (strftime('%s', 'now')),
+  FOREIGN KEY (id) REFERENCES documents(id) ON DELETE CASCADE
+);
+
+-- Vector index for similarity search
+CREATE INDEX idx_embeddings_vector ON embeddings(vector)
+  USING vector_cosine;  -- Cosine similarity index
+#+end_src
+
+*Statistics Table (Optional):*
+#+begin_src sql
+CREATE TABLE index_stats (
+  stat_key TEXT PRIMARY KEY,
+  stat_value TEXT,
+  updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+);
+#+end_src
+
+*** Query Patterns
+
+*Insert Document with Embedding:*
+#+begin_src sql
+BEGIN TRANSACTION;
+
+-- Insert document
+INSERT INTO documents (id, source_path, chunk_index, line_number,
+                       content, chunk_size, chunk_total, metadata)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+-- Insert embedding
+INSERT INTO embeddings (id, vector, model)
+VALUES (?, ?, ?);
+
+COMMIT;
+#+end_src
+
+*Delete File:*
+#+begin_src sql
+DELETE FROM documents WHERE source_path = ?;
+-- Cascade will automatically delete embeddings
+#+end_src
+
+*Vector Similarity Search:*
+#+begin_src sql
+SELECT
+  d.id,
+  d.source_path,
+  d.chunk_index,
+  d.line_number,
+  d.content,
+  d.metadata,
+  vector_distance_cosine(e.vector, ?) as distance
+FROM documents d
+JOIN embeddings e ON d.id = e.id
+ORDER BY distance ASC
+LIMIT ?;
+#+end_src
+
+*Text Search (Full-text):*
+#+begin_src sql
+SELECT
+  id,
+  source_path,
+  chunk_index,
+  line_number,
+  content,
+  metadata
+FROM documents
+WHERE content LIKE '%' || ? || '%'
+LIMIT ?;
+#+end_src
+
+*Get Statistics:*
+#+begin_src sql
+-- Total chunks
+SELECT COUNT(*) FROM documents;
+
+-- Unique files
+SELECT COUNT(DISTINCT source_path) FROM documents;
+
+-- Sample chunk
+SELECT * FROM documents LIMIT 1;
+#+end_src
+
+*** LibSQL Connection Management
+
+*Configuration:*
+#+begin_src python
+from dataclasses import dataclass
+from pathlib import Path
+
+@dataclass(frozen=True)
+class RAGSettings:
+    # Database
+    db_path: Path = Path(os.getenv("EMACS_RAG_DB_PATH",
+                                   Path.home() / ".emacs-rag" / "rag.db"))
+    db_mode: str = "file"  # or "embedded" or "remote"
+
+    # Vector config
+    vector_dimensions: int = 384  # Match embedding model
+
+    # Chunking
+    chunk_size: int = 800
+    chunk_overlap: int = 100
+
+    # Models
+    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    rerank_enabled: bool = True
+    rerank_top_k: int = 20
+#+end_src
+
+*Database Client:*
+#+begin_src python
+import libsql_client
+import struct
+from typing import List
+
+class LibSQLDatabase:
+    def __init__(self, db_path: str):
+        self.client = libsql_client.create_client_sync(
+            url=f"file:{db_path}",
+            auth_token=None
+        )
+        self._init_schema()
+
+    def _init_schema(self):
+        """Create tables if they don't exist"""
+        # Execute schema creation SQL
+        pass
+
+    def add_document(self, id: str, path: str, chunk_idx: int,
+                     line_num: int, content: str, embedding: List[float],
+                     metadata: dict = None):
+        """Add document and embedding in transaction"""
+        # Convert embedding to bytes (float32 array)
+        vector_bytes = struct.pack(f'{len(embedding)}f', *embedding)
+
+        with self.client.transaction() as tx:
+            tx.execute(
+                "INSERT INTO documents (...) VALUES (...)",
+                [id, path, chunk_idx, line_num, content, ...]
+            )
+            tx.execute(
+                "INSERT INTO embeddings (id, vector, model) VALUES (?, ?, ?)",
+                [id, vector_bytes, self.model_name]
+            )
+
+    def vector_search(self, query_embedding: List[float], limit: int):
+        """Perform vector similarity search"""
+        vector_bytes = struct.pack(f'{len(query_embedding)}f', *query_embedding)
+
+        result = self.client.execute(
+            """
+            SELECT d.*, vector_distance_cosine(e.vector, ?) as distance
+            FROM documents d
+            JOIN embeddings e ON d.id = e.id
+            ORDER BY distance ASC
+            LIMIT ?
+            """,
+            [vector_bytes, limit]
+        )
+        return result.rows
+#+end_src
+
+* API Design
+
+** Endpoints
+
+*** POST /index
+*Purpose:* Index or update a file with automatic chunking and embedding
+
+*Request:*
+#+begin_src json
+{
+  "path": "/absolute/path/to/file.org",
+  "content": "optional override content",
+  "metadata": {
+    "author": "John Doe",
+    "tags": ["notes", "project-x"]
+  }
+}
+#+end_src
+
+*Response:*
+#+begin_src json
+{
+  "path": "/absolute/path/to/file.org",
+  "chunks_indexed": 15
+}
+#+end_src
+
+*Processing Steps:*
+1. Resolve and validate file path
+2. Read content (from file or override)
+3. Delete existing chunks for this path
+4. Chunk text with overlap tracking line numbers
+5. Generate embeddings in batches
+6. Store chunks + embeddings + metadata
+7. Return count of indexed chunks
+
+*** GET /search/vector
+*Purpose:* Semantic similarity search using embeddings
+
+*Query Parameters:*
+- =query= (required): Search text
+- =limit= (optional, default: 5): Max results
+- =rerank= (optional, default: true): Enable reranking
+
+*Response:*
+#+begin_src json
+{
+  "results": [
+    {
+      "source_path": "/path/to/file.org",
+      "chunk_index": 2,
+      "line_number": 45,
+      "content": "Relevant text content...",
+      "score": 0.8534
+    }
+  ]
+}
+#+end_src
+
+*Processing Steps:*
+1. Generate embedding for query
+2. Determine initial retrieval limit (rerank_top_k if reranking enabled)
+3. Query vector database for top-K results
+4. If reranking enabled:
+   - Score all results with cross-encoder
+   - Re-sort by cross-encoder scores
+   - Return top-N results
+5. Else return top-N results directly
+
+*** DELETE /files
+*Purpose:* Remove all chunks for a file from the index
+
+*Query Parameters:*
+- =path= (required): Absolute file path to remove
+
+*Response:*
+#+begin_src json
+{
+  "path": "/path/to/file.org",
+  "deleted": true
+}
+#+end_src
+
+*** GET /stats
+*Purpose:* Get database statistics
+
+*Response:*
+#+begin_src json
+{
+  "total_chunks": 1234,
+  "total_unique_files": 56,
+  "sample_chunk": {
+    "ids": "/path/to/file.org:0",
+    "documents": "Sample content...",
+    "metadatas": {
+      "source_path": "/path/to/file.org",
+      "chunk_index": 0,
+      "line_number": 1,
+      "chunk_size": 450,
+      "chunk_total": 12
+    }
+  }
+}
+#+end_src
+
+*** GET /health
+*Purpose:* Health check endpoint
+
+*Response:*
+#+begin_src json
+{
+  "status": "ok"
+}
+#+end_src
+
+*** GET / (Home)
+*Purpose:* HTML landing page with server info and documentation
+
+*Response:* HTML page displaying:
+- Server status
+- Configuration (models, chunk size, reranking settings)
+- Available endpoints with descriptions
+- Links to /docs, /redoc, /health, /stats
+
+* Core Services
+
+** File Service (=file_service.py=)
+
+*Responsibilities:*
+- Index files with chunking and embedding
+- Delete files from index
+- Handle content override vs file reading
+- Manage batch embedding generation
+
+*Key Functions:*
+
+#+begin_src python
+def index_file(path: str, *, content: str | None = None,
+               metadata: Dict | None = None) -> Tuple[str, int]:
+    """
+    Index a file and return (resolved_path, chunk_count)
+
+    Steps:
+    1. Normalize path (expand user, resolve)
+    2. Get content (from parameter or read file)
+    3. Chunk text with line numbers
+    4. Delete existing chunks for path
+    5. Generate embeddings in batches (batch_size=8)
+    6. Prepare chunk metadata
+    7. Store in database (ChromaDB batches of 5000)
+    8. Return path and chunk count
+    """
+    pass
+
+def delete_file(path: str) -> Tuple[str, bool]:
+    """
+    Remove all chunks for a file
+
+    Steps:
+    1. Normalize path
+    2. Delete documents where source_path = path
+    3. Return (path, success)
+    """
+    pass
+#+end_src
+
+** Search Service (=search_service.py=)
+
+*Responsibilities:*
+- Perform vector similarity search
+- Apply two-stage reranking
+- Format search results
+
+*Key Functions:*
+
+#+begin_src python
+def vector_search(query: str, *, limit: int = 5,
+                 rerank: bool = True) -> List[Dict]:
+    """
+    Semantic search with optional reranking
+
+    Steps:
+    1. Get settings (rerank_enabled, rerank_top_k)
+    2. Determine initial_limit based on reranking
+    3. Generate query embedding
+    4. Query database for top-K results
+    5. Format results with metadata
+    6. If reranking:
+       - Score with cross-encoder
+       - Re-sort by scores
+       - Truncate to limit
+    7. Return formatted results
+    """
+    pass
+
+def _rerank_results(query: str, results: List[Dict],
+                   limit: int) -> List[Dict]:
+    """
+    Rerank results using cross-encoder
+
+    Steps:
+    1. Extract content from results
+    2. Create query-document pairs
+    3. Score with cross-encoder model
+    4. Attach scores to results
+    5. Sort by score descending
+    6. Return top-N results
+    """
+    pass
+
+def _format_results(payload: Dict) -> List[Dict]:
+    """
+    Transform database results to API format
+
+    Returns:
+    [
+      {
+        "content": "...",
+        "source_path": "...",
+        "chunk_index": 0,
+        "line_number": 1,
+        "score": 0.85
+      }
+    ]
+    """
+    pass
+#+end_src
+
+** Stats Service (=stats_service.py=)
+
+*Responsibilities:*
+- Query database statistics
+- Provide sample data
+
+*Key Functions:*
+
+#+begin_src python
+def database_stats() -> Dict:
+    """
+    Get index statistics
+
+    Returns:
+    {
+      "total_chunks": int,
+      "total_unique_files": int,
+      "sample_chunk": dict or None
+    }
+    """
+    pass
+#+end_src
+
+* Machine Learning Components
+
+** Embedding Model (=embeddings.py=)
+
+*Purpose:* Generate vector embeddings for text
+
+*Architecture:*
+- Lazy loading with thread-safe singleton
+- Uses sentence-transformers library
+- Configurable model via environment variable
+- Normalized embeddings for cosine similarity
+
+*Key Features:*
+#+begin_src python
+class EmbeddingModel:
+    def __init__(self):
+        self._model = None
+        self._lock = Lock()
+
+    def _load_model(self) -> SentenceTransformer:
+        """Thread-safe lazy loading"""
+        if self._model is None:
+            with self._lock:
+                if self._model is None:
+                    self._model = SentenceTransformer(
+                        model_name,
+                        local_files_only=False
+                    )
+        return self._model
+
+    def embed_documents(self, documents: List[str]) -> List[List[float]]:
+        """Batch encode documents with normalization"""
+        embeddings = self._model.encode(
+            documents,
+            convert_to_numpy=True,
+            show_progress_bar=False,
+            normalize_embeddings=True
+        )
+        return embeddings.tolist()
+
+    def embed_query(self, query: str) -> List[float]:
+        """Encode single query with normalization"""
+        embedding = self._model.encode(
+            [query],
+            normalize_embeddings=True
+        )
+        return embedding[0].tolist()
+#+end_src
+
+*Default Model:*
+- =sentence-transformers/all-MiniLM-L6-v2=
+- Fast inference
+- Good general-purpose quality
+- 384-dimensional embeddings
+- ~80MB model size
+
+*Alternative Models:*
+- Higher quality: =all-mpnet-base-v2= (768 dims)
+- Multilingual: =paraphrase-multilingual-MiniLM-L12-v2=
+- Code-specific: =average_word_embeddings_glove.6B.300d=
+
+** Reranker Model (=reranker.py=)
+
+*Purpose:* Rerank search results using cross-encoder for improved relevance
+
+*Architecture:*
+- Lazy loading with thread-safe singleton
+- Uses sentence-transformers CrossEncoder
+- Scores query-document pairs
+- Higher scores = better relevance
+
+*Key Features:*
+#+begin_src python
+class RerankerModel:
+    def __init__(self):
+        self._model = None
+        self._lock = Lock()
+
+    def _load_model(self) -> CrossEncoder:
+        """Thread-safe lazy loading"""
+        if self._model is None:
+            with self._lock:
+                if self._model is None:
+                    self._model = CrossEncoder(
+                        model_name,
+                        local_files_only=False
+                    )
+        return self._model
+
+    def rerank(self, query: str, documents: List[str]) -> List[float]:
+        """
+        Score query-document pairs
+        Returns scores in same order as input
+        Higher scores indicate better relevance
+        """
+        pairs = [[query, doc] for doc in documents]
+        scores = self._model.predict(
+            pairs,
+            show_progress_bar=False
+        )
+        return scores.tolist()
+#+end_src
+
+*Default Model:*
+- =cross-encoder/ms-marco-MiniLM-L-6-v2=
+- MS MARCO trained
+- Good balance of speed and quality
+- ~90MB model size
+
+*Two-Stage Retrieval Pipeline:*
+
+#+begin_src
+Stage 1: Fast Bi-Encoder Retrieval
+  ├─ Input: Query text
+  ├─ Encode query → embedding vector
+  ├─ Vector search → Top-K candidates (e.g., K=20)
+  └─ Fast but less accurate ranking
+
+Stage 2: Precise Cross-Encoder Reranking
+  ├─ Input: Query + Top-K candidates
+  ├─ Score each query-document pair
+  ├─ Re-sort by cross-encoder scores
+  └─ Return Top-N results (N=user limit)
+#+end_src
+
+*Benefits:*
+- Higher relevance than distance metrics alone
+- Configurable (enable/disable per query or globally)
+- Adjustable candidate pool size (rerank_top_k)
+- No reindexing required to change settings
+
+* Utility Components
+
+** Chunking (=chunking.py=)
+
+*Purpose:* Split text into overlapping chunks with line tracking
+
+*Key Function:*
+#+begin_src python
+def chunk_text(text: str, *, chunk_size: int,
+               overlap: int = 0) -> List[Tuple[str, int]]:
+    """
+    Split text into overlapping chunks
+
+    Args:
+        text: Input text to chunk
+        chunk_size: Maximum characters per chunk
+        overlap: Characters to overlap between chunks
+
+    Returns:
+        List of (chunk_text, line_number) tuples
+        line_number is 1-based starting line for chunk
+
+    Algorithm:
+        1. Start at position 0
+        2. Extract chunk [start:start+chunk_size]
+        3. Calculate line number by counting '\n' before start
+        4. Move start forward by (chunk_size - overlap)
+        5. Repeat until end of text
+    """
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = min(start + chunk_size, len(text))
+        chunk_content = text[start:end]
+        line_number = text[:start].count('\n') + 1
+        chunks.append((chunk_content, line_number))
+        if end == len(text):
+            break
+        start = max(0, end - overlap)
+    return chunks
+#+end_src
+
+*Helper Function:*
+#+begin_src python
+def batched(iterable: Iterable[str], batch_size: int) -> Iterable[List[str]]:
+    """
+    Yield batches from iterable
+    Used for batching embedding generation
+    """
+    batch = []
+    for item in iterable:
+        batch.append(item)
+        if len(batch) >= batch_size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
+#+end_src
+
+*Example:*
+#+begin_example
+Input text: "Line 1\nLine 2\nLine 3\nLine 4"
+chunk_size: 12
+overlap: 3
+
+Output:
+[
+  ("Line 1\nLine ", 1),
+  ("ne 2\nLine 3\n", 2),
+  ("e 3\nLine 4", 3)
+]
+#+end_example
+
+** Configuration (=config.py=)
+
+*Purpose:* Centralized configuration from environment variables
+
+*Configuration Class:*
+#+begin_src python
+@dataclass(frozen=True)
+class RAGSettings:
+    # Database
+    db_path: Path = Path(os.getenv(
+        "EMACS_RAG_DB_PATH",
+        Path.home() / ".emacs-rag" / "chroma"
+    ))
+    collection_name: str = os.getenv(
+        "EMACS_RAG_COLLECTION",
+        "emacs-rag-docs"
+    )
+
+    # Chunking
+    chunk_size: int = int(os.getenv("EMACS_RAG_CHUNK_SIZE", "800"))
+    chunk_overlap: int = int(os.getenv("EMACS_RAG_CHUNK_OVERLAP", "100"))
+
+    # Embedding Model
+    embedding_model: str = os.getenv(
+        "EMACS_RAG_EMBEDDING_MODEL",
+        "sentence-transformers/all-MiniLM-L6-v2"
+    )
+
+    # Reranking
+    rerank_model: str = os.getenv(
+        "EMACS_RAG_RERANK_MODEL",
+        "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    )
+    rerank_enabled: bool = os.getenv(
+        "EMACS_RAG_RERANK_ENABLED",
+        "true"
+    ).lower() in ("true", "1", "yes")
+    rerank_top_k: int = int(os.getenv("EMACS_RAG_RERANK_TOP_K", "20"))
+
+    # Server
+    host: str = os.getenv("EMACS_RAG_HOST", "127.0.0.1")
+    port: int = int(os.getenv("EMACS_RAG_PORT", "8765"))
+
+    def ensure_paths(self) -> None:
+        """Create database directory if needed"""
+        self.db_path.mkdir(parents=True, exist_ok=True)
+
+@lru_cache
+def get_settings() -> RAGSettings:
+    """Cached singleton settings instance"""
+    settings = RAGSettings()
+    settings.ensure_paths()
+    return settings
+#+end_src
+
+*Environment Variables:*
+
+| Variable                    | Default                                 | Description                        |
+|-----------------------------+-----------------------------------------+------------------------------------|
+| EMACS_RAG_DB_PATH           | ~/.emacs-rag/chroma                     | Database directory path            |
+| EMACS_RAG_COLLECTION        | emacs-rag-docs                          | Collection name                    |
+| EMACS_RAG_CHUNK_SIZE        | 800                                     | Max characters per chunk           |
+| EMACS_RAG_CHUNK_OVERLAP     | 100                                     | Overlap between chunks             |
+| EMACS_RAG_EMBEDDING_MODEL   | sentence-transformers/all-MiniLM-L6-v2  | Embedding model ID                 |
+| EMACS_RAG_RERANK_MODEL      | cross-encoder/ms-marco-MiniLM-L-6-v2    | Cross-encoder reranking model      |
+| EMACS_RAG_RERANK_ENABLED    | true                                    | Enable reranking (true/false)      |
+| EMACS_RAG_RERANK_TOP_K      | 20                                      | Candidates before reranking        |
+| EMACS_RAG_HOST              | 127.0.0.1                               | Server bind address                |
+| EMACS_RAG_PORT              | 8765                                    | Server port                        |
+
+* Emacs Client Design
+
+** Server Management (=emacs-rag-server.el=)
+
+*Purpose:* Lifecycle management for Python server process
+
+*Key Components:*
+
+#+begin_src emacs-lisp
+;; Configuration
+(defcustom emacs-rag-server-host "127.0.0.1"
+  "Server hostname")
+
+(defcustom emacs-rag-server-port 8765
+  "Server port")
+
+(defcustom emacs-rag-server-command
+  '("uv" "run" "emacs-rag-server" "serve")
+  "Command to start server")
+
+(defcustom emacs-rag-server-working-directory nil
+  "Working directory for server (auto-detect if nil)")
+
+(defcustom emacs-rag-db-path "~/.emacs-rag/chroma"
+  "Database directory path")
+
+;; State
+(defvar emacs-rag-server-process nil
+  "Server process object")
+
+;; Functions
+(defun emacs-rag-start-server ()
+  "Start the Python server if not running"
+  (unless (emacs-rag-server-running-p)
+    (let* ((default-directory (emacs-rag--get-server-directory))
+           (process-environment
+            (cons (format "EMACS_RAG_DB_PATH=%s" emacs-rag-db-path)
+                  process-environment)))
+      (setq emacs-rag-server-process
+            (make-process
+             :name "emacs-rag-server"
+             :buffer "*emacs-rag-server*"
+             :command (emacs-rag--server-command)
+             :noquery t))
+      (set-process-sentinel emacs-rag-server-process
+                            #'emacs-rag--server-sentinel))))
+
+(defun emacs-rag-stop-server ()
+  "Stop the running server"
+  (when (emacs-rag-server-running-p)
+    (delete-process emacs-rag-server-process)
+    (setq emacs-rag-server-process nil)))
+
+(defun emacs-rag-server-running-p ()
+  "Check if server is alive"
+  (and emacs-rag-server-process
+       (process-live-p emacs-rag-server-process)))
+
+(defun emacs-rag-ensure-server ()
+  "Start server if not running"
+  (unless (emacs-rag-server-running-p)
+    (emacs-rag-start-server)))
+#+end_src
+
+** Indexing Commands (=emacs-rag-index.el=)
+
+*Purpose:* Commands for indexing files and directories
+
+*Key Components:*
+
+#+begin_src emacs-lisp
+;; Configuration
+(defcustom emacs-rag-indexed-extensions '("org")
+  "File extensions to index")
+
+(defcustom emacs-rag-auto-index-on-save t
+  "Auto-reindex on save")
+
+(defcustom emacs-rag-http-timeout 5
+  "HTTP request timeout in seconds")
+
+;; HTTP Request Helper
+(defun emacs-rag--request (method endpoint &optional payload query)
+  "Make HTTP request to server
+  METHOD: GET, POST, DELETE
+  ENDPOINT: /index, /search/vector, etc.
+  PAYLOAD: alist to encode as JSON body
+  QUERY: alist of query parameters
+  Returns: parsed JSON response as alist"
+  (emacs-rag-ensure-server)
+  (let* ((url-request-method method)
+         (url-request-extra-headers
+          (when payload '(("Content-Type" . "application/json"))))
+         (url-request-data (json-encode payload))
+         (url (concat base-url endpoint query-string)))
+    (with-current-buffer (url-retrieve-synchronously url)
+      (goto-char (point-min))
+      (re-search-forward "^$")
+      (json-parse-buffer :object-type 'alist))))
+
+;; Indexing Commands
+(defun emacs-rag-index-file (file &optional metadata)
+  "Index a file with optional metadata"
+  (interactive "fIndex file: ")
+  (let* ((payload `(("path" . ,(expand-file-name file))
+                   ,@(when metadata `(("metadata" . ,metadata)))))
+         (response (emacs-rag--request "POST" "/index" payload)))
+    (message "Indexed %s chunks"
+             (alist-get 'chunks_indexed response))))
+
+(defun emacs-rag-index-buffer ()
+  "Index current buffer with content override"
+  (interactive)
+  (let* ((path (buffer-file-name))
+         (content (buffer-substring-no-properties (point-min) (point-max)))
+         (payload `(("path" . ,path) ("content" . ,content))))
+    (emacs-rag--request "POST" "/index" payload)))
+
+(defun emacs-rag-index-directory (directory)
+  "Recursively index directory (async)"
+  (interactive "DDirectory: ")
+  (let* ((files (directory-files-recursively directory ""))
+         (files (cl-remove-if-not #'emacs-rag--eligible-file-p files)))
+    (emacs-rag--index-files-async files 0 (length files))))
+
+(defun emacs-rag--index-files-async (files count total)
+  "Async indexing with progress"
+  (when files
+    (condition-case err
+        (progn
+          (emacs-rag-index-file (car files))
+          (message "Indexed [%d/%d]: %s" (1+ count) total (car files)))
+      (error (message "Failed [%d/%d]: %s" (1+ count) total
+                     (error-message-string err))))
+    (run-with-timer 0.1 nil #'emacs-rag--index-files-async
+                    (cdr files) (if err count (1+ count)) total)))
+
+;; Auto-index on save
+(defun emacs-rag--maybe-index-on-save ()
+  "Hook for after-save to reindex buffer"
+  (when (and emacs-rag-auto-index-on-save
+             (emacs-rag--eligible-file-p (buffer-file-name))
+             (derived-mode-p 'org-mode))
+    (emacs-rag-index-buffer)))
+
+(add-hook 'after-save-hook #'emacs-rag--maybe-index-on-save)
+#+end_src
+
+** Search Interface (=emacs-rag-search.el=)
+
+*Purpose:* Vector search with result navigation
+
+*Key Components:*
+
+#+begin_src emacs-lisp
+;; Configuration
+(defcustom emacs-rag-search-limit 5
+  "Default number of search results")
+
+;; Search Command
+(defun emacs-rag-search-vector (query &optional limit)
+  "Semantic vector search"
+  (interactive (list (emacs-rag--read-query "Vector query: ")
+                     (when current-prefix-arg
+                       (prefix-numeric-value current-prefix-arg))))
+  (let* ((payload `(("query" . ,query) ("limit" . ,(or limit 5))))
+         (response (emacs-rag--request "GET" "/search/vector" nil payload))
+         (results (alist-get 'results response)))
+    (emacs-rag-search-display results "Vector" query)))
+
+;; Result Display (Ivy Integration)
+(defun emacs-rag-search-display (results mode query)
+  "Display results with ivy completion"
+  (if (null results)
+      (message "No %s results for %s" mode query)
+    (let* ((candidates (cl-loop for result in results
+                                for index from 1
+                                collect (cons (emacs-rag--format-result result index)
+                                            result))))
+      (ivy-read (format "%s search for %s: " mode query)
+                (mapcar #'car candidates)
+                :action (lambda (choice)
+                         (let ((result (cdr (assoc choice candidates))))
+                           (emacs-rag--open-result result)))))))
+
+;; Result Formatting (Multiline)
+(defun emacs-rag--format-result (result index)
+  "Format result for display
+  Returns multiline string with header and wrapped content"
+  (let* ((path (alist-get 'source_path result))
+         (basename (file-name-nondirectory path))
+         (chunk (alist-get 'chunk_index result))
+         (score (alist-get 'score result))
+         (content (alist-get 'content result))
+         (header (format "%2d. %-20s chunk %-3s score %.3f"
+                        index basename chunk score)))
+    (format "%s\n%s" header (emacs-rag--wrap-content content))))
+
+;; Result Navigation
+(defun emacs-rag--open-result (result)
+  "Open file and jump to line"
+  (let* ((path (alist-get 'source_path result))
+         (line-number (alist-get 'line_number result)))
+    (find-file path)
+    (goto-char (point-min))
+    (forward-line (1- line-number))))
+
+;; Statistics
+(defun emacs-rag-stats ()
+  "Display index statistics"
+  (interactive)
+  (let* ((stats (emacs-rag--request "GET" "/stats"))
+         (chunks (alist-get 'total_chunks stats))
+         (files (alist-get 'total_unique_files stats)))
+    (message "Index contains %s chunks across %s files" chunks files)))
+
+;; Database Management
+(defun emacs-rag-delete-database ()
+  "Delete entire database after confirmation"
+  (interactive)
+  (when (yes-or-no-p "Delete entire database? This cannot be undone! ")
+    (when (emacs-rag-server-running-p)
+      (emacs-rag-stop-server)
+      (sit-for 1))
+    (delete-directory emacs-rag-db-path t)
+    (message "Database deleted")))
+#+end_src
+
+** Transient Menu (=emacs-rag.el=)
+
+*Purpose:* Unified interface for all operations
+
+#+begin_src emacs-lisp
+(require 'transient)
+
+(transient-define-prefix emacs-rag-menu ()
+  "Emacs RAG menu"
+  ["Emacs RAG"
+   ["Search"
+    ("v" "Vector search" emacs-rag-search-vector)]
+   ["Server"
+    ("a" "Start server" emacs-rag-start-server)
+    ("p" "Stop server" emacs-rag-stop-server)
+    ("t" "Stats" emacs-rag-stats)
+    ("l" "Show server log" emacs-rag-show-server-buffer)]
+   ["Index"
+    ("b" "Buffer" emacs-rag-index-buffer)
+    ("f" "File" emacs-rag-index-file)
+    ("d" "Directory" emacs-rag-index-directory)
+    ("r" "Remove database" emacs-rag-delete-database)]
+   ["Debug"
+    ("D" "Debug info" emacs-rag-debug)]])
+
+;; Entry point: M-x emacs-rag-menu
+#+end_src
+
+** Debug Information (=emacs-rag.el=)
+
+*Purpose:* Diagnostic information display
+
+#+begin_src emacs-lisp
+(defun emacs-rag-debug ()
+  "Display diagnostic information"
+  (interactive)
+  (with-current-buffer (get-buffer-create "*emacs-rag-debug*")
+    (erase-buffer)
+    (insert "# Emacs RAG Debug Information\n\n")
+
+    ;; Emacs Configuration
+    (insert "## Emacs Configuration\n\n")
+    (insert (format "- Server Host: %s\n" emacs-rag-server-host))
+    (insert (format "- Server Port: %d\n" emacs-rag-server-port))
+    (insert (format "- DB Path: %s\n" emacs-rag-db-path))
+    (insert (format "- Server Status: %s\n\n" (emacs-rag-server-status)))
+
+    ;; Environment Variables
+    (insert "## Environment Variables\n\n")
+    (dolist (var '("EMACS_RAG_DB_PATH" "EMACS_RAG_COLLECTION"
+                   "EMACS_RAG_EMBEDDING_MODEL" "EMACS_RAG_RERANK_ENABLED"))
+      (insert (format "- %s: %s\n" var (or (getenv var) "not set"))))
+
+    ;; Python Environment
+    (insert "\n## Python Environment\n\n")
+    (insert (format "- Python: %s\n"
+                   (shell-command-to-string "python3 --version")))
+
+    ;; Database Info
+    (insert "\n## Database Information\n\n")
+    (insert (format "- DB Path: %s\n" (expand-file-name emacs-rag-db-path)))
+    (insert (format "- DB Exists: %s\n"
+                   (if (file-exists-p emacs-rag-db-path) "yes" "no")))
+
+    (goto-char (point-min))
+    (special-mode)
+    (pop-to-buffer (current-buffer))))
+#+end_src
+
+* Data Models
+
+** Request/Response Schemas (=schemas.py=)
+
+#+begin_src python
+from pydantic import BaseModel, Field
+from typing import List, Dict, Any, Optional
+
+class IndexRequest(BaseModel):
+    path: str = Field(..., description="Absolute file path")
+    content: Optional[str] = Field(None, description="Content override")
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+class IndexResponse(BaseModel):
+    path: str
+    chunks_indexed: int
+
+class DeleteResponse(BaseModel):
+    path: str
+    deleted: bool
+
+class SearchResult(BaseModel):
+    source_path: str
+    chunk_index: int
+    line_number: int
+    content: str
+    score: float
+
+class SearchResponse(BaseModel):
+    results: List[SearchResult]
+
+class StatsResponse(BaseModel):
+    total_chunks: int
+    total_unique_files: int
+    sample_chunk: Optional[Dict[str, Any]] = None
+
+class HealthResponse(BaseModel):
+    status: str = "ok"
+#+end_src
+
+* Feature Checklist
+
+** Core Features (Implemented)
+
+- [X] File indexing with automatic chunking
+- [X] Vector similarity search using embeddings
+- [X] Two-stage reranking with cross-encoder
+- [X] Metadata attachment to indexed documents
+- [X] File deletion from index
+- [X] Line number tracking for navigation
+- [X] Async directory indexing (Emacs side)
+- [X] Auto-reindex on save (Org files)
+- [X] Server lifecycle management from Emacs
+- [X] Index statistics and sample data
+- [X] Health check endpoint
+- [X] Configurable chunking (size/overlap)
+- [X] Configurable embedding models
+- [X] Configurable reranking models
+- [X] Transient menu interface
+- [X] Ivy integration for search results
+- [X] Multiline result display
+- [X] Debug information display
+- [X] Content override for indexing (buffer content)
+- [X] Batch embedding generation
+- [X] Environment-based configuration
+- [X] HTML landing page with documentation
+
+** Features to Implement (Future)
+
+- [ ] Metadata-based filtering in search
+- [ ] Multiple collection support
+- [ ] PDF/DOCX indexing (via docling)
+- [ ] Project-scoped search
+- [ ] org-db integration
+- [ ] scimax-notebook integration
+- [ ] Enhanced metadata (author, tags from org properties)
+- [ ] Incremental indexing (detect changes)
+- [ ] Search result caching
+- [ ] Export search results
+- [ ] Search history
+- [ ] Bookmarking/favoriting results
+- [ ] Custom ranking functions
+- [ ] Fuzzy search
+- [ ] Regex search
+- [ ] Date-based filtering
+- [ ] File type filtering in search
+- [ ] Duplicate detection
+- [ ] Chunk overlap visualization
+- [ ] Index compression
+- [ ] Remote server support
+- [ ] Authentication/authorization
+- [ ] Rate limiting
+- [ ] Request logging
+- [ ] Performance metrics
+- [ ] Backup/restore database
+- [ ] Export database to different format
+- [ ] Import from other systems
+
+* Implementation Guide for LibSQL Migration
+
+** Step 1: Replace ChromaDB with LibSQL
+
+*** Install LibSQL Dependencies
+#+begin_src toml
+# pyproject.toml
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "libsql-client>=0.3.0",  # Replace chromadb
+    "sentence-transformers>=2.6.0",
+    "pydantic>=2.6.0",
+    "python-multipart>=0.0.9",
+    "typer>=0.12.0",
+    "watchfiles>=0.21.0",
+]
+#+end_src
+
+*** Create LibSQL Database Module (=models/database.py=)
+
+Replace =chromadb= imports and functions with LibSQL equivalents:
+
+#+begin_src python
+from functools import lru_cache
+import libsql_client
+import struct
+import json
+from typing import List, Dict, Any
+
+@lru_cache
+def get_client() -> libsql_client.Client:
+    settings = get_settings()
+    return libsql_client.create_client_sync(
+        url=f"file:{settings.db_path}/rag.db"
+    )
+
+def init_schema():
+    """Create tables if not exist"""
+    client = get_client()
+    client.execute("""
+        CREATE TABLE IF NOT EXISTS documents (
+            id TEXT PRIMARY KEY,
+            source_path TEXT NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            line_number INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            chunk_size INTEGER NOT NULL,
+            chunk_total INTEGER NOT NULL,
+            metadata JSON,
+            created_at INTEGER DEFAULT (strftime('%s', 'now')),
+            updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+        )
+    """)
+    client.execute("""
+        CREATE TABLE IF NOT EXISTS embeddings (
+            id TEXT PRIMARY KEY,
+            vector BLOB NOT NULL,
+            model TEXT NOT NULL,
+            created_at INTEGER DEFAULT (strftime('%s', 'now')),
+            FOREIGN KEY (id) REFERENCES documents(id) ON DELETE CASCADE
+        )
+    """)
+    # Create indexes
+    client.execute("CREATE INDEX IF NOT EXISTS idx_documents_path ON documents(source_path)")
+    client.execute("CREATE INDEX IF NOT EXISTS idx_embeddings_vector ON embeddings(vector) USING vector_cosine")
+
+def add_documents(*, ids: List[str], documents: List[str],
+                  metadatas: List[Dict], embeddings: List[List[float]]):
+    """Insert documents and embeddings"""
+    client = get_client()
+    settings = get_settings()
+
+    for doc_id, content, metadata, embedding in zip(ids, documents, metadatas, embeddings):
+        # Convert embedding to bytes
+        vector_bytes = struct.pack(f'{len(embedding)}f', *embedding)
+
+        with client.transaction() as tx:
+            # Insert document
+            tx.execute("""
+                INSERT INTO documents
+                (id, source_path, chunk_index, line_number, content, chunk_size, chunk_total, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, [
+                doc_id,
+                metadata['source_path'],
+                metadata['chunk_index'],
+                metadata['line_number'],
+                content,
+                metadata['chunk_size'],
+                metadata['chunk_total'],
+                json.dumps({k: v for k, v in metadata.items()
+                           if k not in ['source_path', 'chunk_index', 'line_number', 'chunk_size', 'chunk_total']})
+            ])
+
+            # Insert embedding
+            tx.execute("""
+                INSERT INTO embeddings (id, vector, model)
+                VALUES (?, ?, ?)
+            """, [doc_id, vector_bytes, settings.embedding_model])
+
+def delete_documents_for_path(path: str):
+    """Delete all chunks for a file"""
+    client = get_client()
+    client.execute("DELETE FROM documents WHERE source_path = ?", [path])
+
+def query_by_vector(query_embedding: List[float], *, n_results: int = 5) -> Dict:
+    """Vector similarity search"""
+    client = get_client()
+    vector_bytes = struct.pack(f'{len(query_embedding)}f', *query_embedding)
+
+    result = client.execute("""
+        SELECT
+            d.id,
+            d.source_path,
+            d.chunk_index,
+            d.line_number,
+            d.content,
+            d.metadata,
+            vector_distance_cosine(e.vector, ?) as distance
+        FROM documents d
+        JOIN embeddings e ON d.id = e.id
+        ORDER BY distance ASC
+        LIMIT ?
+    """, [vector_bytes, n_results])
+
+    # Format results to match ChromaDB structure
+    return {
+        'ids': [[row['id'] for row in result.rows]],
+        'documents': [[row['content'] for row in result.rows]],
+        'metadatas': [[{
+            'source_path': row['source_path'],
+            'chunk_index': row['chunk_index'],
+            'line_number': row['line_number'],
+            **(json.loads(row['metadata']) if row['metadata'] else {})
+        } for row in result.rows]],
+        'distances': [[row['distance'] for row in result.rows]]
+    }
+#+end_src
+
+** Step 2: Update Configuration
+
+Modify =utils/config.py= to use LibSQL path:
+
+#+begin_src python
+@dataclass(frozen=True)
+class RAGSettings:
+    db_path: Path = Path(os.getenv(
+        "EMACS_RAG_DB_PATH",
+        Path.home() / ".emacs-rag" / "libsql"  # Changed from /chroma
+    ))
+    # ... rest of config
+
+    def ensure_paths(self) -> None:
+        self.db_path.mkdir(parents=True, exist_ok=True)
+#+end_src
+
+** Step 3: Initialize Schema on Startup
+
+Update =main.py= to initialize database:
+
+#+begin_src python
+from .models.database import init_schema
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    settings.ensure_paths()
+    init_schema()  # Add this
+    yield
+#+end_src
+
+** Step 4: Update Statistics Service
+
+Modify =services/stats_service.py= for LibSQL:
+
+#+begin_src python
+from ..models.database import get_client
+
+def database_stats() -> Dict:
+    client = get_client()
+
+    # Total chunks
+    total_chunks = client.execute("SELECT COUNT(*) as count FROM documents").rows[0]['count']
+
+    # Unique files
+    total_files = client.execute("SELECT COUNT(DISTINCT source_path) as count FROM documents").rows[0]['count']
+
+    # Sample chunk
+    sample = client.execute("SELECT * FROM documents LIMIT 1").rows
+    sample_chunk = None
+    if sample:
+        row = sample[0]
+        sample_chunk = {
+            'ids': row['id'],
+            'documents': row['content'],
+            'metadatas': {
+                'source_path': row['source_path'],
+                'chunk_index': row['chunk_index'],
+                'line_number': row['line_number'],
+                'chunk_size': row['chunk_size'],
+                'chunk_total': row['chunk_total']
+            }
+        }
+
+    return {
+        'total_chunks': total_chunks,
+        'total_unique_files': total_files,
+        'sample_chunk': sample_chunk
+    }
+#+end_src
+
+** Step 5: Test Migration
+
+1. Update environment variable:
+   #+begin_src bash
+   export EMACS_RAG_DB_PATH="$HOME/.emacs-rag/libsql"
+   #+end_src
+
+2. Run server:
+   #+begin_src bash
+   uv run emacs-rag-server serve
+   #+end_src
+
+3. Test indexing:
+   #+begin_src bash
+   curl -X POST http://127.0.0.1:8765/index \
+     -H "Content-Type: application/json" \
+     -d '{"path": "/path/to/test.org"}'
+   #+end_src
+
+4. Test search:
+   #+begin_src bash
+   curl "http://127.0.0.1:8765/search/vector?query=test&limit=5"
+   #+end_src
+
+5. Test from Emacs:
+   #+begin_src emacs-lisp
+   (setq emacs-rag-db-path "~/.emacs-rag/libsql")
+   (emacs-rag-start-server)
+   (emacs-rag-index-file "/path/to/test.org")
+   (emacs-rag-search-vector "test query")
+   #+end_src
+
+** Step 6: Update Documentation
+
+- Update README.org to reference LibSQL
+- Update environment variable descriptions
+- Add LibSQL-specific configuration options
+- Document migration path from ChromaDB
+
+* Testing Strategy
+
+** Unit Tests
+
+*** Chunking Tests (=tests/test_chunking.py=)
+- Test chunk size boundaries
+- Test overlap calculation
+- Test line number tracking
+- Test empty input
+- Test edge cases (text shorter than chunk_size)
+
+*** Configuration Tests (=tests/test_config.py=)
+- Test environment variable parsing
+- Test default values
+- Test path resolution
+- Test validation
+
+*** Database Tests
+- Test schema creation
+- Test document insertion
+- Test vector search
+- Test deletion
+- Test transaction rollback
+
+*** Service Tests
+- Test file indexing workflow
+- Test search with reranking
+- Test statistics calculation
+
+** Integration Tests
+
+*** API Tests
+- Test all endpoints with valid input
+- Test error handling (404, 400, 500)
+- Test request/response schemas
+- Test concurrent requests
+
+*** Emacs Integration Tests
+- Test server start/stop
+- Test file indexing from Emacs
+- Test search from Emacs
+- Test error handling in Emacs
+
+** Performance Tests
+
+- Indexing speed (files/second)
+- Search latency (p50, p95, p99)
+- Memory usage under load
+- Concurrent request handling
+- Large file handling (>1MB)
+- Large result sets (>1000 chunks)
+
+* Deployment Considerations
+
+** Local Development
+
+#+begin_src bash
+# Clone repository
+git clone <repo-url>
+cd emacs-rag-codex
+
+# Install Python dependencies
+cd emacs-rag-server
+uv sync
+
+# Add Emacs package to load path
+# In ~/.emacs.d/init.el:
+(add-to-list 'load-path "/path/to/emacs-rag-codex/emacs-rag")
+(require 'emacs-rag)
+(emacs-rag-start-server)
+#+end_src
+
+** Production Deployment
+
+*** Server Configuration
+
+#+begin_src bash
+# Use systemd service
+[Unit]
+Description=Emacs RAG Server
+After=network.target
+
+[Service]
+Type=simple
+User=raguser
+WorkingDirectory=/opt/emacs-rag-server
+Environment="EMACS_RAG_DB_PATH=/var/lib/emacs-rag"
+Environment="EMACS_RAG_HOST=0.0.0.0"
+Environment="EMACS_RAG_PORT=8765"
+ExecStart=/usr/bin/uv run emacs-rag-server serve
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+#+end_src
+
+*** Security Considerations
+
+- Use authentication for remote access
+- Implement rate limiting
+- Validate file paths (prevent directory traversal)
+- Sanitize user input
+- Use HTTPS for remote deployment
+- Restrict network access (firewall)
+- Regular security updates
+- Audit logging
+
+*** Monitoring
+
+- Health check endpoint: =GET /health=
+- Application metrics (request count, latency)
+- Database size monitoring
+- Memory usage alerts
+- Error rate tracking
+- Logging (structured JSON logs)
+
+** Docker Deployment
+
+#+begin_src dockerfile
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Install dependencies
+COPY pyproject.toml uv.lock ./
+RUN pip install uv && uv sync
+
+# Copy application
+COPY src ./src
+
+# Create data directory
+RUN mkdir -p /data
+
+# Environment
+ENV EMACS_RAG_DB_PATH=/data
+ENV EMACS_RAG_HOST=0.0.0.0
+ENV EMACS_RAG_PORT=8765
+
+EXPOSE 8765
+
+CMD ["uv", "run", "emacs-rag-server", "serve"]
+#+end_src
+
+* Performance Optimization
+
+** Embedding Generation
+- Batch processing (current: 8 documents/batch)
+- GPU acceleration (if available)
+- Model quantization for smaller size
+- Caching embeddings for unchanged content
+
+** Search Optimization
+- Index optimization (vector indexes)
+- Query result caching
+- Adjust rerank_top_k based on corpus size
+- Parallel reranking for large candidate sets
+
+** Database Optimization
+- Regular VACUUM (SQLite maintenance)
+- Index tuning for common queries
+- Connection pooling
+- Batch operations (current: 5000/batch)
+
+** Emacs Client Optimization
+- Async indexing (already implemented)
+- Result streaming for large searches
+- Incremental search (search-as-you-type)
+- Cache search results locally
+
+* Maintenance and Operations
+
+** Database Maintenance
+
+#+begin_src bash
+# Backup database
+cp ~/.emacs-rag/rag.db ~/.emacs-rag/rag.db.backup
+
+# Compact database (SQLite)
+sqlite3 ~/.emacs-rag/rag.db "VACUUM;"
+
+# Export to JSON
+curl http://127.0.0.1:8765/stats > stats.json
+
+# Clear database (from Emacs)
+M-x emacs-rag-delete-database
+#+end_src
+
+** Model Updates
+
+#+begin_src bash
+# Update embedding model
+export EMACS_RAG_EMBEDDING_MODEL="sentence-transformers/all-mpnet-base-v2"
+
+# Reindex all documents
+# (need to implement bulk reindex endpoint)
+
+# Update reranker model
+export EMACS_RAG_RERANK_MODEL="cross-encoder/ms-marco-MiniLM-L-12-v2"
+# No reindexing needed
+#+end_src
+
+** Log Management
+
+#+begin_src emacs-lisp
+;; View server logs
+(emacs-rag-show-server-buffer)
+
+;; Clear server logs
+(with-current-buffer "*emacs-rag-server*"
+  (erase-buffer))
+#+end_src
+
+* Troubleshooting
+
+** Common Issues
+
+*** Server won't start
+- Check Python version (>=3.10)
+- Verify uv is installed
+- Check port is not in use
+- Review server logs
+
+*** Indexing fails
+- Verify file exists and is readable
+- Check file encoding (UTF-8 preferred)
+- Ensure disk space available
+- Check server logs for errors
+
+*** Search returns no results
+- Verify documents are indexed (=emacs-rag-stats=)
+- Check query matches content
+- Try increasing search limit
+- Disable reranking temporarily
+
+*** Poor search quality
+- Enable reranking
+- Increase =rerank_top_k=
+- Try different embedding model
+- Adjust chunk size/overlap
+- Add more context to queries
+
+*** High memory usage
+- Reduce batch sizes
+- Use smaller embedding models
+- Limit concurrent requests
+- Clear old indexes
+
+*** Slow indexing
+- Reduce chunk overlap
+- Use faster embedding models
+- Increase batch size
+- Index fewer files at once
+
+** Debug Checklist
+
+1. Check server status: =M-x emacs-rag-debug=
+2. View server logs: =M-x emacs-rag-show-server-buffer=
+3. Verify environment variables
+4. Test API directly with curl
+5. Check database exists and has content
+6. Verify models are downloaded
+7. Test with minimal example
+
+* Appendix
+
+** File Structure
+
+#+begin_src
+emacs-rag-codex/
+├── emacs-rag/                    # Emacs Lisp client
+│   ├── emacs-rag.el             # Main entry point + transient menu
+│   ├── emacs-rag-server.el      # Server lifecycle management
+│   ├── emacs-rag-index.el       # Indexing commands
+│   └── emacs-rag-search.el      # Search interface
+├── emacs-rag-server/            # Python FastAPI server
+│   ├── src/
+│   │   └── emacs_rag_server/
+│   │       ├── main.py          # FastAPI app
+│   │       ├── cli.py           # Command-line interface
+│   │       ├── api/
+│   │       │   └── routes.py    # API endpoints
+│   │       ├── models/
+│   │       │   ├── database.py  # Database interface (ChromaDB → LibSQL)
+│   │       │   ├── embeddings.py # Embedding model wrapper
+│   │       │   ├── reranker.py  # Cross-encoder reranker
+│   │       │   └── schemas.py   # Pydantic models
+│   │       ├── services/
+│   │       │   ├── file_service.py    # File indexing
+│   │       │   ├── search_service.py  # Search operations
+│   │       │   └── stats_service.py   # Statistics
+│   │       └── utils/
+│   │           ├── chunking.py  # Text chunking
+│   │           └── config.py    # Configuration
+│   ├── tests/
+│   │   ├── test_chunking.py
+│   │   └── test_config.py
+│   ├── pyproject.toml
+│   └── README.org
+├── readme.org                    # Project documentation
+└── software-design.org          # This document
+#+end_src
+
+** Dependencies
+
+*** Python Dependencies
+- fastapi (>=0.110.0) - Web framework
+- uvicorn (>=0.29.0) - ASGI server
+- chromadb (>=0.5.0) OR libsql-client (>=0.3.0) - Vector database
+- sentence-transformers (>=2.6.0) - Embeddings + cross-encoder
+- pydantic (>=2.6.0) - Data validation
+- python-multipart (>=0.0.9) - File upload support
+- typer (>=0.12.0) - CLI framework
+- watchfiles (>=0.21.0) - File watching
+
+*** Emacs Dependencies
+- Emacs 27.1+ (lexical-binding, cl-lib)
+- ivy (optional, for enhanced search UI)
+- transient (for menu interface)
+
+** Reference Links
+
+- FastAPI: https://fastapi.tiangolo.com/
+- ChromaDB: https://www.trychroma.com/
+- LibSQL: https://github.com/tursodatabase/libsql
+- Sentence Transformers: https://www.sbert.net/
+- Hugging Face Models: https://huggingface.co/models
