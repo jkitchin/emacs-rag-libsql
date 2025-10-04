@@ -55,13 +55,15 @@
   ["Emacs RAG"
    ["Search"
     ("v" "Vector search" emacs-rag-search-vector)
+    ("t" "Text search" emacs-rag-search-text)
+    ("y" "Hybrid search" emacs-rag-search-hybrid)
     ("s" "Search at point" emacs-rag-search-at-point)
     ("h" "Search with history" emacs-rag-search-vector-with-history)]
    ["Server"
     ("a" "Start server" emacs-rag-start-server)
     ("p" "Stop server" emacs-rag-stop-server)
     ("r" "Restart server" emacs-rag-restart-server)
-    ("t" "Show statistics" emacs-rag-stats)
+    ("S" "Show statistics" emacs-rag-stats)
     ("l" "Show server log" emacs-rag-show-server-buffer)]
    ["Index"
     ("b" "Index buffer" emacs-rag-index-buffer)
@@ -72,6 +74,9 @@
     ("x" "Delete buffer from index" emacs-rag-delete-buffer)
     ("X" "Delete file from index" emacs-rag-delete-file)
     ("R" "Remove database" emacs-rag-delete-database)]
+   ["Maintenance"
+    ("F" "Rebuild FTS index" emacs-rag-rebuild-fts-index)
+    ("B" "Rebuild database" emacs-rag-rebuild-database)]
    ["Debug"
     ("D" "Debug info" emacs-rag-debug)]])
 

@@ -10,12 +10,14 @@ from ..models.schemas import (
     HealthResponse,
     IndexRequest,
     IndexResponse,
+    RebuildFtsResponse,
     SearchResponse,
     SearchResult,
     StatsResponse,
 )
+from ..models.database import rebuild_fts_index
 from ..services.file_service import delete_file, index_file
-from ..services.search_service import vector_search
+from ..services.search_service import hybrid_search, text_search, vector_search
 from ..services.stats_service import database_stats
 from ..utils.config import get_settings
 
@@ -77,6 +79,14 @@ async def home():
         </div>
 
         <div class="endpoint">
+            <strong>GET /search/text</strong> - Full-text search using FTS5
+        </div>
+
+        <div class="endpoint">
+            <strong>GET /search/hybrid</strong> - Hybrid search combining vector and full-text
+        </div>
+
+        <div class="endpoint">
             <strong>DELETE /files</strong> - Remove all chunks for a file
         </div>
 
@@ -86,6 +96,10 @@ async def home():
 
         <div class="endpoint">
             <strong>GET /health</strong> - Health check
+        </div>
+
+        <div class="endpoint">
+            <strong>POST /rebuild-fts</strong> - Rebuild FTS5 index from documents
         </div>
 
         <h2>Documentation</h2>
@@ -157,6 +171,52 @@ async def search_vector_endpoint(
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 
 
+@router.get("/search/text", response_model=SearchResponse)
+async def search_text_endpoint(
+    query: str = Query(..., description="Full-text search query"),
+    limit: int = Query(5, ge=1, le=100, description="Maximum number of results")
+):
+    """
+    Full-text search using FTS5 with BM25 ranking.
+
+    - **query**: Full-text search query (supports FTS5 syntax)
+    - **limit**: Maximum number of results (1-100)
+
+    Returns list of matching chunks with BM25 scores.
+    """
+    try:
+        results = text_search(query, limit=limit)
+        search_results = [SearchResult(**r) for r in results]
+        return SearchResponse(results=search_results)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Text search failed: {str(e)}")
+
+
+@router.get("/search/hybrid", response_model=SearchResponse)
+async def search_hybrid_endpoint(
+    query: str = Query(..., description="Search query text"),
+    limit: int = Query(5, ge=1, le=100, description="Maximum number of results"),
+    vector_weight: float = Query(0.5, ge=0.0, le=1.0, description="Weight for vector scores (0-1)"),
+    rerank: bool = Query(True, description="Enable reranking")
+):
+    """
+    Hybrid search combining vector similarity and full-text search.
+
+    - **query**: Search query text
+    - **limit**: Maximum number of results (1-100)
+    - **vector_weight**: Weight for vector scores (0-1), text weight is (1-vector_weight)
+    - **rerank**: Whether to apply two-stage reranking
+
+    Returns list of matching chunks with combined scores.
+    """
+    try:
+        results = hybrid_search(query, limit=limit, vector_weight=vector_weight, rerank=rerank)
+        search_results = [SearchResult(**r) for r in results]
+        return SearchResponse(results=search_results)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Hybrid search failed: {str(e)}")
+
+
 @router.delete("/files", response_model=DeleteResponse)
 async def delete_file_endpoint(
     path: str = Query(..., description="Absolute file path to remove")
@@ -197,3 +257,23 @@ async def health_endpoint():
     Returns server status.
     """
     return HealthResponse(status="ok")
+
+
+@router.post("/rebuild-fts", response_model=RebuildFtsResponse)
+async def rebuild_fts_endpoint():
+    """
+    Rebuild the FTS5 full-text search index.
+
+    This drops and recreates the FTS5 table, then repopulates it from
+    the documents table. Useful when the FTS5 index gets out of sync.
+
+    Returns the number of documents reindexed.
+    """
+    try:
+        count = rebuild_fts_index()
+        return RebuildFtsResponse(
+            documents_reindexed=count,
+            message=f"FTS5 index rebuilt with {count} documents"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"FTS rebuild failed: {str(e)}")

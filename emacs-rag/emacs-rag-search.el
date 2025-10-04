@@ -94,6 +94,47 @@ With prefix argument, prompt for limit."
          (results (alist-get 'results response)))
     (emacs-rag--display-results results "Vector" query)))
 
+(defun emacs-rag-search-text (query &optional limit)
+  "Perform full-text search for QUERY using FTS5.
+LIMIT is the maximum number of results (defaults to `emacs-rag-search-limit').
+
+With prefix argument, prompt for limit."
+  (interactive (list (emacs-rag--read-query "Full-text search: ")
+                     (when current-prefix-arg
+                       (read-number "Number of results: "
+                                   emacs-rag-search-limit))))
+  (let* ((limit (or limit emacs-rag-search-limit))
+         (response (emacs-rag--request "GET" "/search/text" nil
+                                      `((query . ,query)
+                                        (limit . ,limit))))
+         (results (alist-get 'results response)))
+    (emacs-rag--display-results results "Full-text" query)))
+
+(defun emacs-rag-search-hybrid (query &optional limit vector-weight rerank)
+  "Perform hybrid search for QUERY combining vector and full-text search.
+LIMIT is the maximum number of results (defaults to `emacs-rag-search-limit').
+VECTOR-WEIGHT is the weight for vector scores (0-1, defaults to 0.5).
+RERANK enables reranking (defaults to `emacs-rag-search-enable-rerank').
+
+With prefix argument, prompt for limit and vector weight."
+  (interactive (list (emacs-rag--read-query "Hybrid search: ")
+                     (when current-prefix-arg
+                       (read-number "Number of results: "
+                                   emacs-rag-search-limit))
+                     (when current-prefix-arg
+                       (read-number "Vector weight (0-1): " 0.5))
+                     emacs-rag-search-enable-rerank))
+  (let* ((limit (or limit emacs-rag-search-limit))
+         (vector-weight (or vector-weight 0.5))
+         (rerank (if rerank "true" "false"))
+         (response (emacs-rag--request "GET" "/search/hybrid" nil
+                                      `((query . ,query)
+                                        (limit . ,limit)
+                                        (vector_weight . ,vector-weight)
+                                        (rerank . ,rerank))))
+         (results (alist-get 'results response)))
+    (emacs-rag--display-results results "Hybrid" query)))
+
 ;;; Result Display
 
 (defun emacs-rag--display-results (results mode query)
@@ -156,6 +197,52 @@ This operation cannot be undone!"
       (when (file-directory-p db-dir)
         (delete-directory db-dir t)
         (message "Database deleted: %s" db-dir)))))
+
+(defun emacs-rag-rebuild-database ()
+  "Delete and rebuild the RAG database.
+This will stop the server, delete the database, restart the server
+to recreate the schema, then optionally reindex open buffers."
+  (interactive)
+  (when (yes-or-no-p "Rebuild database? This will delete all indexed data! ")
+    (let ((was-running (emacs-rag-server-running-p)))
+      ;; Stop server if running
+      (when was-running
+        (message "Stopping server...")
+        (emacs-rag-stop-server)
+        (sit-for 1))
+
+      ;; Delete database
+      (let ((db-dir (expand-file-name emacs-rag-db-path)))
+        (when (file-directory-p db-dir)
+          (delete-directory db-dir t)
+          (message "Database deleted: %s" db-dir)))
+
+      ;; Restart server to recreate schema
+      (message "Restarting server to recreate database schema...")
+      (emacs-rag-start-server)
+      (sit-for 2)
+
+      ;; Optionally reindex open buffers
+      (when (and (emacs-rag-server-running-p)
+                 (yes-or-no-p "Reindex all open buffers? "))
+        (emacs-rag-reindex-all-open-buffers))
+
+      (message "Database rebuild complete"))))
+
+(defun emacs-rag-rebuild-fts-index ()
+  "Rebuild the FTS5 full-text search index.
+This rebuilds the FTS5 index from existing documents without
+requiring a full database rebuild. Useful when the FTS5 index
+gets out of sync with the documents table."
+  (interactive)
+  (if (not (emacs-rag-server-running-p))
+      (user-error "Server is not running. Start it first with `emacs-rag-start-server'")
+    (when (yes-or-no-p "Rebuild FTS5 index? ")
+      (message "Rebuilding FTS5 index...")
+      (let* ((response (emacs-rag--request "POST" "/rebuild-fts"))
+             (count (alist-get 'documents_reindexed response))
+             (msg (alist-get 'message response)))
+        (message "%s (%d documents)" msg count)))))
 
 ;;; Search at Point
 

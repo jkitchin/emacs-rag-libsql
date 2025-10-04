@@ -48,3 +48,9 @@ class StatsResponse(BaseModel):
 class HealthResponse(BaseModel):
     """Response schema for health check."""
     status: str = "ok"
+
+
+class RebuildFtsResponse(BaseModel):
+    """Response schema for FTS rebuild operation."""
+    documents_reindexed: int
+    message: str
