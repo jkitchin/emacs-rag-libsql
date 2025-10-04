@@ -244,6 +244,29 @@ gets out of sync with the documents table."
              (msg (alist-get 'message response)))
         (message "%s (%d documents)" msg count)))))
 
+;;; File Navigation
+
+(defun emacs-rag-open-indexed-file ()
+  "Select and open a file from the database using Ivy/completing-read."
+  (interactive)
+  (if (not (emacs-rag-server-running-p))
+      (user-error "Server is not running. Start it first with `emacs-rag-start-server'")
+    (let* ((response (emacs-rag--request "GET" "/files"))
+           (files (alist-get 'files response))
+           (count (alist-get 'count response)))
+      (if (zerop count)
+          (message "No files indexed yet")
+        (let ((choice (if (fboundp 'ivy-read)
+                          (ivy-read (format "Open indexed file (%d total): " count)
+                                   files
+                                   :action (lambda (x) x))
+                        (completing-read
+                         (format "Open indexed file (%d total): " count)
+                         files
+                         nil t))))
+          (when choice
+            (find-file choice)))))))
+
 ;;; Search at Point
 
 (defun emacs-rag-search-at-point ()

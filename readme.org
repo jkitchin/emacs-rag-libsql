@@ -236,7 +236,7 @@ Add to your Emacs configuration:
 #+end_src
 
 #+RESULTS:
-: [nil 26848 6562 45580 nil #[nil ((if (emacs-rag-server-running-p) (message "Emacs RAG server started successfully") (message "Warning: Server may not have started properly"))) (t)] nil nil 0 nil]
+: [nil 26849 43594 138510 nil #[nil ((if (emacs-rag-server-running-p) (message "Emacs RAG server started successfully") (message "Warning: Server may not have started properly"))) (t)] nil nil 0 nil]
 
 * Quick Start Guide
 
@@ -320,17 +320,17 @@ Displays comprehensive diagnostic information.
 
 #+BEGIN_SRC emacs-lisp
 ;; Load the specific file with full path
-(load-file (expand-file-name "emacs-rag/emacs-rag-server.el" default-directory))
-(load-file (expand-file-name "emacs-rag/emacs-rag-index.el" default-directory))
-(load-file (expand-file-name "emacs-rag/emacs-rag-search.el" default-directory))
-(load-file (expand-file-name "emacs-rag/emacs-rag.el" default-directory))
+(load-file "/Users/jkitchin/Dropbox/emacs/user/emacs-rag-libsql/emacs-rag/emacs-rag-server.el")
+(load-file "/Users/jkitchin/Dropbox/emacs/user/emacs-rag-libsql/emacs-rag/emacs-rag-index.el")
+(load-file "/Users/jkitchin/Dropbox/emacs/user/emacs-rag-libsql/emacs-rag/emacs-rag-search.el")
+(load-file "/Users/jkitchin/Dropbox/emacs/user/emacs-rag-libsql/emacs-rag/emacs-rag.el")
 
 (emacs-rag-stop-server)
 (emacs-rag-start-server)
 #+END_SRC
 
 #+RESULTS:
-: [nil 26848 10958 638265 nil #[nil ((if (emacs-rag-server-running-p) (message "Emacs RAG server started successfully") (message "Warning: Server may not have started properly"))) (t)] nil nil 0 nil]
+: [nil 26849 22920 68606 nil #[nil ((if (emacs-rag-server-running-p) (message "Emacs RAG server started successfully") (message "Warning: Server may not have started properly"))) (t)] nil nil 0 nil]
 
 
 * Usage Examples
@@ -358,7 +358,7 @@ Search across your project documentation:
 
 #+begin_src emacs-lisp
 ;; Add markdown files to indexed types
-(setq emacs-rag-indexed-extensions '("org" "md" "txt"))
+(setq emacs-rag-indexed-extensions '("org"))
 
 ;; Index docs directory
 M-x emacs-rag-index-directory

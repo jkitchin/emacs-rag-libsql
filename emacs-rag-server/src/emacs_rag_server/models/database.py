@@ -299,6 +299,13 @@ def get_total_unique_files() -> int:
     return result.rows[0][0] if result.rows else 0
 
 
+def get_all_indexed_files() -> List[str]:
+    """Get list of all unique file paths in the database."""
+    client = get_client()
+    result = client.execute("SELECT DISTINCT source_path FROM documents ORDER BY source_path")
+    return [row[0] for row in result.rows]
+
+
 def get_sample_chunk() -> Dict[str, Any] | None:
     """Get a sample chunk for inspection."""
     client = get_client()

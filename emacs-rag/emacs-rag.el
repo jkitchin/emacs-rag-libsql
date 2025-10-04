@@ -77,6 +77,8 @@
    ["Maintenance"
     ("F" "Rebuild FTS index" emacs-rag-rebuild-fts-index)
     ("B" "Rebuild database" emacs-rag-rebuild-database)]
+   ["Navigation"
+    ("O" "Open indexed file" emacs-rag-open-indexed-file)]
    ["Debug"
     ("D" "Debug info" emacs-rag-debug)]])
 

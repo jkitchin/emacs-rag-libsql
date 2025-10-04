@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse
 from ..models.schemas import (
     DeleteResponse,
     HealthResponse,
+    IndexedFilesResponse,
     IndexRequest,
     IndexResponse,
     RebuildFtsResponse,
@@ -15,7 +16,7 @@ from ..models.schemas import (
     SearchResult,
     StatsResponse,
 )
-from ..models.database import rebuild_fts_index
+from ..models.database import get_all_indexed_files, rebuild_fts_index
 from ..services.file_service import delete_file, index_file
 from ..services.search_service import hybrid_search, text_search, vector_search
 from ..services.stats_service import database_stats
@@ -100,6 +101,10 @@ async def home():
 
         <div class="endpoint">
             <strong>POST /rebuild-fts</strong> - Rebuild FTS5 index from documents
+        </div>
+
+        <div class="endpoint">
+            <strong>GET /files</strong> - List all indexed files
         </div>
 
         <h2>Documentation</h2>
@@ -277,3 +282,17 @@ async def rebuild_fts_endpoint():
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"FTS rebuild failed: {str(e)}")
+
+
+@router.get("/files", response_model=IndexedFilesResponse)
+async def list_files_endpoint():
+    """
+    List all indexed files.
+
+    Returns a list of all unique file paths in the database.
+    """
+    try:
+        files = get_all_indexed_files()
+        return IndexedFilesResponse(files=files, count=len(files))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list files: {str(e)}")
