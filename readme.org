@@ -224,7 +224,7 @@ Add to your Emacs configuration:
 #+RESULTS:
 
 
-** How do i force it to reload after changing the files?
+** How do I force it to reload after changing the files?
 
 #+begin_src emacs-lisp
 ;; Load the specific file with full path
@@ -238,9 +238,29 @@ Add to your Emacs configuration:
 #+end_src
 
 #+RESULTS:
-: [nil 26849 45728 909814 nil #[nil ((if (emacs-rag-server-running-p) (message "Emacs RAG server started successfully") (message "Warning: Server may not have started properly"))) (t)] nil nil 0 nil]
+: [nil 26850 31993 403682 nil #[nil ((if (emacs-rag-server-running-p) (message "Emacs RAG server started successfully") (message "Warning: Server may not have started properly"))) (t)] nil nil 0 nil]
 
 * Quick Start Guide
+
+** Using the Transient Menu
+
+The easiest way to use emacs-rag is through the transient menu:
+
+#+begin_src emacs-lisp
+M-x emacs-rag-menu
+#+end_src
+
+This opens an organized menu with all commands:
+
+*Top Row:*
+- *Search* (v/t/y/h/F): Vector, text, hybrid search, org headings, open files
+- *Server* (a/p/r/S/l): Start, stop, restart, stats, logs
+- *Index* (b/f/d/o): Buffer, file, directory, open buffers
+
+*Bottom Row:*
+- *Delete* (x/X/R): Buffer, file, database
+- *Maintenance* (M/B): Rebuild FTS index, rebuild database
+- *Debug* (D): Debug information
 
 ** 1. Start the Server
 
@@ -248,7 +268,7 @@ Add to your Emacs configuration:
 M-x emacs-rag-start-server
 #+end_src
 
-Or from the main menu:
+Or from the transient menu:
 
 #+begin_src emacs-lisp
 M-x emacs-rag-menu
@@ -344,7 +364,6 @@ Displays comprehensive diagnostic information.
 
 #+RESULTS:
 : [nil 26849 22920 68606 nil #[nil ((if (emacs-rag-server-running-p) (message "Emacs RAG server started successfully") (message "Warning: Server may not have started properly"))) (t)] nil nil 0 nil]
-
 
 * Usage Examples
 
@@ -817,7 +836,9 @@ Potential features for future development:
 
 * License
 
-This project is licensed under the terms specified in the repository.
+This project is licensed under the MIT License. See the [[file:LICENSE][LICENSE]] file for details.
+
+Copyright (c) 2025 John Kitchin
 
 * Contributing
 
