@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
-from ..models.database import add_documents, delete_documents_for_path
+from ..models.database import add_documents, add_org_headings, delete_documents_for_path
 from ..models.embeddings import get_embedding_model
 from ..utils.chunking import batched, chunk_text
 from ..utils.config import get_settings
@@ -122,6 +122,9 @@ def index_file(
         metadatas=all_metadatas,
         embeddings=all_embeddings
     )
+
+    # Extract and store org headings if this is an org file
+    add_org_headings(resolved_path, content)
 
     return (resolved_path, total_chunks)
 

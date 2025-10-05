@@ -52,13 +52,12 @@
 ;;;###autoload (autoload 'emacs-rag-menu "emacs-rag" nil t)
 (transient-define-prefix emacs-rag-menu ()
   "Emacs RAG main menu."
-  ["Emacs RAG"
-   ["Search"
+  [["Search"
     ("v" "Vector search" emacs-rag-search-vector)
     ("t" "Text search" emacs-rag-search-text)
     ("y" "Hybrid search" emacs-rag-search-hybrid)
-    ("s" "Search at point" emacs-rag-search-at-point)
-    ("h" "Search with history" emacs-rag-search-vector-with-history)]
+    ("h" "Jump to org heading" emacs-rag-jump-to-org-heading)
+    ("F" "Open indexed file" emacs-rag-open-indexed-file)]
    ["Server"
     ("a" "Start server" emacs-rag-start-server)
     ("p" "Stop server" emacs-rag-stop-server)
@@ -69,16 +68,14 @@
     ("b" "Index buffer" emacs-rag-index-buffer)
     ("f" "Index file" emacs-rag-index-file)
     ("d" "Index directory" emacs-rag-index-directory)
-    ("o" "Reindex open buffers" emacs-rag-reindex-all-open-buffers)]
-   ["Delete"
+    ("o" "Reindex open buffers" emacs-rag-reindex-all-open-buffers)]]
+  [["Delete"
     ("x" "Delete buffer from index" emacs-rag-delete-buffer)
     ("X" "Delete file from index" emacs-rag-delete-file)
     ("R" "Remove database" emacs-rag-delete-database)]
    ["Maintenance"
-    ("F" "Rebuild FTS index" emacs-rag-rebuild-fts-index)
+    ("M" "Rebuild FTS index" emacs-rag-rebuild-fts-index)
     ("B" "Rebuild database" emacs-rag-rebuild-database)]
-   ["Navigation"
-    ("O" "Open indexed file" emacs-rag-open-indexed-file)]
    ["Debug"
     ("D" "Debug info" emacs-rag-debug)]])
 

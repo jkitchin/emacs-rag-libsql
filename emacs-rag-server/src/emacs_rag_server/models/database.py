@@ -79,6 +79,25 @@ def init_schema() -> None:
         )
     """)
 
+    # Create org headings table for fast heading navigation
+    client.execute("""
+        CREATE TABLE IF NOT EXISTS org_headings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_path TEXT NOT NULL,
+            line_number INTEGER NOT NULL,
+            heading_text TEXT NOT NULL,
+            tags TEXT,
+            level INTEGER NOT NULL,
+            created_at INTEGER DEFAULT (strftime('%s', 'now')),
+            UNIQUE(source_path, line_number)
+        )
+    """)
+
+    # Create index on source_path for faster lookups
+    client.execute(
+        "CREATE INDEX IF NOT EXISTS idx_org_headings_path ON org_headings(source_path)"
+    )
+
 
 def add_documents(
     *,
@@ -156,6 +175,7 @@ def delete_documents_for_path(path: str) -> None:
     client = get_client()
     client.execute("DELETE FROM documents WHERE source_path = ?", [path])
     client.execute("DELETE FROM documents_fts WHERE source_path = ?", [path])
+    client.execute("DELETE FROM org_headings WHERE source_path = ?", [path])
 
 
 def query_by_vector(query_embedding: List[float], *, n_results: int = 5) -> Dict[str, Any]:
@@ -619,3 +639,74 @@ def rebuild_fts_index() -> int:
     count = result.rows[0][0] if result.rows else 0
 
     return count
+
+
+def add_org_headings(path: str, content: str) -> int:
+    """
+    Extract and store org headings from file content.
+
+    Args:
+        path: Absolute file path
+        content: File content
+
+    Returns:
+        Number of headings extracted
+    """
+    import re
+
+    if not path.endswith('.org'):
+        return 0
+
+    client = get_client()
+
+    # Delete existing headings for this file
+    client.execute("DELETE FROM org_headings WHERE source_path = ?", [path])
+
+    # Parse org headings
+    heading_pattern = re.compile(r'^(\*+)\s+(.+?)(?:\s+(:[a-zA-Z0-9_@:]+:))?\s*$')
+    lines = content.split('\n')
+    headings_added = 0
+
+    for line_num, line in enumerate(lines, 1):
+        match = heading_pattern.match(line)
+        if match:
+            stars = match.group(1)
+            heading_text = match.group(2).strip()
+            tags = match.group(3).strip() if match.group(3) else None
+            level = len(stars)
+
+            client.execute("""
+                INSERT OR REPLACE INTO org_headings
+                (source_path, line_number, heading_text, tags, level)
+                VALUES (?, ?, ?, ?, ?)
+            """, [path, line_num, heading_text, tags, level])
+            headings_added += 1
+
+    return headings_added
+
+
+def get_all_org_headings() -> List[Dict[str, Any]]:
+    """
+    Get all org headings from the database.
+
+    Returns:
+        List of dictionaries with heading information
+    """
+    client = get_client()
+    result = client.execute("""
+        SELECT source_path, line_number, heading_text, tags, level
+        FROM org_headings
+        ORDER BY source_path, line_number
+    """)
+
+    headings = []
+    for row in result.rows:
+        headings.append({
+            'source_path': row[0],
+            'line_number': row[1],
+            'heading_text': row[2],
+            'tags': row[3],
+            'level': row[4]
+        })
+
+    return headings

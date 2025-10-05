@@ -60,3 +60,18 @@ class IndexedFilesResponse(BaseModel):
     """Response schema for indexed files list."""
     files: List[str]
     count: int
+
+
+class OrgHeading(BaseModel):
+    """Single org heading."""
+    source_path: str
+    line_number: int
+    heading_text: str
+    tags: Optional[str] = None
+    level: int
+
+
+class OrgHeadingsResponse(BaseModel):
+    """Response schema for org headings list."""
+    headings: List[OrgHeading]
+    count: int

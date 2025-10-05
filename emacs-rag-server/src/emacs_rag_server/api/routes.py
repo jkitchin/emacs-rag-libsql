@@ -11,12 +11,14 @@ from ..models.schemas import (
     IndexedFilesResponse,
     IndexRequest,
     IndexResponse,
+    OrgHeading,
+    OrgHeadingsResponse,
     RebuildFtsResponse,
     SearchResponse,
     SearchResult,
     StatsResponse,
 )
-from ..models.database import get_all_indexed_files, rebuild_fts_index
+from ..models.database import get_all_indexed_files, get_all_org_headings, rebuild_fts_index
 from ..services.file_service import delete_file, index_file
 from ..services.search_service import hybrid_search, text_search, vector_search
 from ..services.stats_service import database_stats
@@ -105,6 +107,10 @@ async def home():
 
         <div class="endpoint">
             <strong>GET /files</strong> - List all indexed files
+        </div>
+
+        <div class="endpoint">
+            <strong>GET /org-headings</strong> - List all org headings
         </div>
 
         <h2>Documentation</h2>
@@ -296,3 +302,18 @@ async def list_files_endpoint():
         return IndexedFilesResponse(files=files, count=len(files))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list files: {str(e)}")
+
+
+@router.get("/org-headings", response_model=OrgHeadingsResponse)
+async def list_org_headings_endpoint():
+    """
+    List all org headings from indexed files.
+
+    Returns a list of all org headings with their source file, line number, text, tags, and level.
+    """
+    try:
+        headings_data = get_all_org_headings()
+        headings = [OrgHeading(**h) for h in headings_data]
+        return OrgHeadingsResponse(headings=headings, count=len(headings))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list org headings: {str(e)}")

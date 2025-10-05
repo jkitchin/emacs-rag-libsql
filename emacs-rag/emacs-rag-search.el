@@ -79,8 +79,11 @@ Returns a multiline string with header and wrapped content."
 LIMIT is the maximum number of results (defaults to `emacs-rag-search-limit').
 RERANK enables reranking (defaults to `emacs-rag-search-enable-rerank').
 
-With prefix argument, prompt for limit."
-  (interactive (list (emacs-rag--read-query "Vector search: ")
+With prefix argument, prompt for limit.
+If region is active, use it as the default query."
+  (interactive (list (if (use-region-p)
+                         (buffer-substring-no-properties (region-beginning) (region-end))
+                       (emacs-rag--read-query "Vector search: "))
                      (when current-prefix-arg
                        (read-number "Number of results: "
                                    emacs-rag-search-limit))
@@ -98,8 +101,11 @@ With prefix argument, prompt for limit."
   "Perform full-text search for QUERY using FTS5.
 LIMIT is the maximum number of results (defaults to `emacs-rag-search-limit').
 
-With prefix argument, prompt for limit."
-  (interactive (list (emacs-rag--read-query "Full-text search: ")
+With prefix argument, prompt for limit.
+If region is active, use it as the default query."
+  (interactive (list (if (use-region-p)
+                         (buffer-substring-no-properties (region-beginning) (region-end))
+                       (emacs-rag--read-query "Full-text search: "))
                      (when current-prefix-arg
                        (read-number "Number of results: "
                                    emacs-rag-search-limit))))
@@ -116,8 +122,11 @@ LIMIT is the maximum number of results (defaults to `emacs-rag-search-limit').
 VECTOR-WEIGHT is the weight for vector scores (0-1, defaults to 0.5).
 RERANK enables reranking (defaults to `emacs-rag-search-enable-rerank').
 
-With prefix argument, prompt for limit and vector weight."
-  (interactive (list (emacs-rag--read-query "Hybrid search: ")
+With prefix argument, prompt for limit and vector weight.
+If region is active, use it as the default query."
+  (interactive (list (if (use-region-p)
+                         (buffer-substring-no-properties (region-beginning) (region-end))
+                       (emacs-rag--read-query "Hybrid search: "))
                      (when current-prefix-arg
                        (read-number "Number of results: "
                                    emacs-rag-search-limit))
@@ -266,6 +275,43 @@ gets out of sync with the documents table."
                          nil t))))
           (when choice
             (find-file choice)))))))
+
+(defun emacs-rag-jump-to-org-heading ()
+  "Jump to an org heading from indexed files using fast database lookup."
+  (interactive)
+  (if (not (emacs-rag-server-running-p))
+      (user-error "Server is not running. Start it first with `emacs-rag-start-server'")
+    (let* ((response (emacs-rag--request "GET" "/org-headings"))
+           (headings (alist-get 'headings response))
+           (count (alist-get 'count response)))
+      (if (zerop count)
+          (message "No org headings found. Index some .org files first.")
+        (let* ((candidates
+                (mapcar (lambda (heading)
+                          (let* ((text (alist-get 'heading_text heading))
+                                 (tags (alist-get 'tags heading))
+                                 (path (alist-get 'source_path heading))
+                                 (line (alist-get 'line_number heading))
+                                 (display (format "%-40s | %-20s | %s"
+                                                (truncate-string-to-width text 40 nil nil "...")
+                                                (or tags "")
+                                                path)))
+                            (cons display heading)))
+                        headings))
+               (selected (if (fboundp 'ivy-read)
+                            (ivy-read (format "Jump to org heading (%d total): " count)
+                                     (mapcar #'car candidates))
+                          (completing-read (format "Jump to org heading (%d total): " count)
+                                          (mapcar #'car candidates)
+                                          nil t)))
+               (choice (cdr (assoc selected candidates))))
+          (when choice
+            (let ((file (alist-get 'source_path choice))
+                  (line (alist-get 'line_number choice)))
+              (find-file file)
+              (goto-char (point-min))
+              (forward-line (1- line))
+              (recenter))))))))
 
 ;;; Search at Point
 
