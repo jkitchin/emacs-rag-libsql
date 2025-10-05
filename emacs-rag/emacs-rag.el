@@ -128,9 +128,15 @@
       (insert (format "- DB Exists: %s\n"
                      (if (file-exists-p db-path) "yes" "no")))
       (when (file-exists-p db-path)
-        (insert (format "- DB Size: %s\n"
-                       (file-size-human-readable
-                        (file-attribute-size (file-attributes db-path)))))))
+        (let* ((db-file (expand-file-name "rag.db" db-path))
+               (size-bytes (when (file-exists-p db-file)
+                            (file-attribute-size (file-attributes db-file))))
+               (size-mb (when size-bytes (/ size-bytes 1048576.0))))
+          (insert (format "- DB Size: %s (%.2f MB)\n"
+                         (if size-bytes
+                             (file-size-human-readable size-bytes)
+                           "unknown")
+                         (or size-mb 0.0))))))
     (insert "\n")
 
     ;; Server Health Check
