@@ -226,7 +226,7 @@ Add to your Emacs configuration:
 
 ** How do I force it to reload after changing the files?
 
-#+begin_src emacs-lisp
+#+begin_src emacs-lisp :results silent
 ;; Load the specific file with full path
 (load-file (expand-file-name "emacs-rag/emacs-rag-server.el" default-directory))
 (load-file (expand-file-name "emacs-rag/emacs-rag-index.el" default-directory))
@@ -237,8 +237,7 @@ Add to your Emacs configuration:
 (emacs-rag-start-server)
 #+end_src
 
-#+RESULTS:
-: [nil 26850 31993 403682 nil #[nil ((if (emacs-rag-server-running-p) (message "Emacs RAG server started successfully") (message "Warning: Server may not have started properly"))) (t)] nil nil 0 nil]
+
 
 * Quick Start Guide
 
