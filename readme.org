@@ -64,6 +64,7 @@ This approach combines the *speed* of vector search with the *accuracy* of cross
 - *Real-time Search*: Dynamic Ivy collections update results as you type
 - *Async Operations*: Non-blocking directory indexing
 - *Server Lifecycle*: Automatic server management - starts when needed
+- *gptel Integration*: LLM function calling tools for RAG-augmented AI interactions
 
 ** 🗄️ LibSQL Backend
 
@@ -373,14 +374,18 @@ Displays comprehensive diagnostic information.
 (load-file "/Users/jkitchin/Dropbox/emacs/user/emacs-rag-libsql/emacs-rag/emacs-rag-server.el")
 (load-file "/Users/jkitchin/Dropbox/emacs/user/emacs-rag-libsql/emacs-rag/emacs-rag-index.el")
 (load-file "/Users/jkitchin/Dropbox/emacs/user/emacs-rag-libsql/emacs-rag/emacs-rag-search.el")
+(load-file "/Users/jkitchin/Dropbox/emacs/user/emacs-rag-libsql/emacs-rag/emacs-rag-gptel-tools.el")
 (load-file "/Users/jkitchin/Dropbox/emacs/user/emacs-rag-libsql/emacs-rag/emacs-rag.el")
+
 
 (emacs-rag-stop-server)
 (emacs-rag-start-server)
+
+(emacs-rag-gptel-enable-tool)
 #+END_SRC
 
 #+RESULTS:
-: [nil 26849 22920 68606 nil #[nil ((if (emacs-rag-server-running-p) (message "Emacs RAG server started successfully") (message "Warning: Server may not have started properly"))) (t)] nil nil 0 nil]
+: RAG search tool enabled for gptel
 
 * Usage Examples
 
@@ -677,6 +682,61 @@ Add custom metadata when indexing:
     (emacs-rag-index-directory project-root)))
 #+end_src
 
+** LLM Integration with gptel
+
+The =emacs-rag-gptel-tools= module provides function calling tools that allow LLMs (via gptel) to search your indexed documents and retrieve relevant information during AI interactions.
+
+*** Setup
+
+First, ensure you have gptel installed with tool support:
+
+#+begin_src emacs-lisp
+;; Load the gptel tools module
+(require 'emacs-rag-gptel-tools)
+
+;; Enable the RAG search tool
+(emacs-rag-gptel-enable-tool)
+#+end_src
+
+*** Usage
+
+Once enabled, when you interact with an LLM through gptel, it can automatically call the =rag_search= tool to retrieve relevant information from your indexed documents:
+
+#+begin_src emacs-lisp
+;; Example: Ask the LLM a question about your documents
+;; The LLM will automatically use rag_search if it needs information
+
+M-x gptel-send
+
+Prompt: "What did I write about machine learning optimization in my notes?it m"
+
+;; The LLM will:
+;; 1. Call rag_search with query "machine learning optimization"
+;; 2. Receive the full text of the most relevant file
+;; 3. Use that information to answer your question
+#+end_src
+
+*** Available Tool
+
+*=rag_search=*: Searches through indexed documents using semantic vector search and returns the full text of the top matching file.
+
+Parameters:
+- =query= (string): The search query to find relevant documents
+
+The tool automatically handles:
+- Server availability checking
+- Vector search with reranking enabled
+- Retrieving the full file content
+- Returning formatted results with relevance scores
+
+*** Disabling the Tool
+
+To disable the RAG search tool:
+
+#+begin_src emacs-lisp
+(emacs-rag-gptel-disable-tool)
+#+end_src
+
 ** Different Embedding Models
 
 For better quality (but slower):
@@ -850,7 +910,7 @@ Potential features for future development:
 - [ ] Remote server support
 - [ ] Date-based filtering
 - [ ] Duplicate detection
-- [ ] Integration with GPT for RAG
+- [X] Integration with GPT for RAG (via gptel tools)
 
 * License
 
