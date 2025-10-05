@@ -28,6 +28,7 @@ Traditional text search finds what you *type*. Semantic search finds what you *m
 - *Full-Text Search*: Fast FTS5-powered keyword search with BM25 ranking
 - *Hybrid Search*: Combines vector and full-text search with configurable weighting
 - *Org Heading Navigation*: Jump directly to any org heading across all indexed files
+- *Semantic Org Heading Search*: Dynamic real-time semantic search across headings (with Ivy)
 - *Configurable Models*: Choose from multiple embedding models based on your needs
 
 ** 🎯 Two-Stage Reranking
@@ -59,7 +60,8 @@ This approach combines the *speed* of vector search with the *accuracy* of cross
 - *Auto-indexing*: Automatically reindex files when you save them
 - *Direct Navigation*: Jump straight to relevant lines in your documents
 - *Transient Menu*: Beautiful, organized interface for all operations
-- *Ivy Integration*: Enhanced search result selection (with fallback to completing-read)
+- *Ivy Integration*: Enhanced search result selection with dynamic collections (fallback to completing-read)
+- *Real-time Search*: Dynamic Ivy collections update results as you type
 - *Async Operations*: Non-blocking directory indexing
 - *Server Lifecycle*: Automatic server management - starts when needed
 
@@ -332,6 +334,22 @@ M-x emacs-rag-jump-to-org-heading
 
 Browse all org headings from indexed files with instant navigation.
 
+*** Search Org Headings Semantically
+
+#+begin_src emacs-lisp
+M-x emacs-rag-search-org-headings
+#+end_src
+
+Perform semantic search across org headings. When using Ivy, this provides a *dynamic search interface* - results update in real-time as you type, continuously re-querying the semantic search engine with your current input.
+
+This is particularly useful for:
+- Finding headings by concept rather than exact wording
+- Exploring related topics across multiple org files
+- Quick navigation when you remember the topic but not the exact heading text
+
+With Ivy: Type continuously and watch results update dynamically
+Without Ivy: Enter query once, then select from static results
+
 *** View Statistics
 
 #+begin_src emacs-lisp
@@ -598,14 +616,15 @@ Health check.
 
 *** Search
 
-| Command                         | Description                                |
-|---------------------------------+--------------------------------------------|
-| =emacs-rag-search-vector=       | Semantic vector search (uses region)       |
-| =emacs-rag-search-text=         | Full-text FTS5 search (uses region)        |
-| =emacs-rag-search-hybrid=       | Hybrid vector + text search (uses region)  |
-| =emacs-rag-jump-to-org-heading= | Navigate to any org heading                |
-| =emacs-rag-open-indexed-file=   | Browse and open indexed files              |
-| =emacs-rag-stats=               | Show database statistics                   |
+| Command                         | Description                                        |
+|---------------------------------+----------------------------------------------------|
+| =emacs-rag-search-vector=       | Semantic vector search (uses region)               |
+| =emacs-rag-search-text=         | Full-text FTS5 search (uses region)                |
+| =emacs-rag-search-hybrid=       | Hybrid vector + text search (uses region)          |
+| =emacs-rag-search-org-headings= | Semantic search of org headings (dynamic with Ivy) |
+| =emacs-rag-jump-to-org-heading= | Navigate to any org heading                        |
+| =emacs-rag-open-indexed-file=   | Browse and open indexed files                      |
+| =emacs-rag-stats=               | Show database statistics                           |
 
 *** Utilities
 

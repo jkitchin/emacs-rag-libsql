@@ -318,16 +318,68 @@ gets out of sync with the documents table."
 LIMIT is the maximum number of results (defaults to 20).
 
 With prefix argument, prompt for limit.
-If region is active, use it as the default query."
+If region is active, use it as the default query.
+
+When using Ivy, the search is dynamic - results update as you type."
   (interactive (list (if (use-region-p)
                          (buffer-substring-no-properties (region-beginning) (region-end))
-                       (emacs-rag--read-query "Search org headings: "))
+                       nil)
                      (when current-prefix-arg
                        (read-number "Number of results: " 20))))
   (if (not (emacs-rag-server-running-p))
       (user-error "Server is not running. Start it first with `emacs-rag-start-server'")
-    (let* ((limit (or limit 20))
-           (response (emacs-rag--request "GET" "/search/org-headings" nil
+    (let ((limit (or limit 20)))
+      (if (fboundp 'ivy-read)
+          (emacs-rag--search-org-headings-ivy query limit)
+        (emacs-rag--search-org-headings-static query limit)))))
+
+(defun emacs-rag--search-org-headings-ivy (initial-query limit)
+  "Dynamic Ivy interface for searching org headings.
+INITIAL-QUERY is the starting query (can be nil).
+LIMIT is the maximum number of results."
+  (let ((candidates-cache nil))
+    (ivy-read "Search org headings: "
+              (lambda (input)
+                (if (string-empty-p input)
+                    (setq candidates-cache nil)
+                  (let* ((response (emacs-rag--request "GET" "/search/org-headings" nil
+                                                      `((query . ,input)
+                                                        (limit . ,limit))))
+                         (results (alist-get 'results response)))
+                    (setq candidates-cache
+                          (mapcar (lambda (result)
+                                    (let* ((text (alist-get 'heading_text result))
+                                           (tags (alist-get 'tags result))
+                                           (path (alist-get 'source_path result))
+                                           (line (alist-get 'line_number result))
+                                           (score (alist-get 'score result))
+                                           (basename (file-name-nondirectory path))
+                                           (display (format "%.3f  %-40s | %-15s | %s"
+                                                          score
+                                                          (truncate-string-to-width text 40 nil nil "...")
+                                                          (or tags "")
+                                                          basename)))
+                                      (cons display result)))
+                                  results))))
+                candidates-cache)
+              :dynamic-collection t
+              :initial-input initial-query
+              :action (lambda (selection)
+                       (let* ((choice (cdr (assoc selection candidates-cache))))
+                         (when choice
+                           (let ((file (alist-get 'source_path choice))
+                                 (line (alist-get 'line_number choice)))
+                             (find-file file)
+                             (goto-char (point-min))
+                             (forward-line (1- line))
+                             (recenter))))))))
+
+(defun emacs-rag--search-org-headings-static (query limit)
+  "Static search interface for org headings (fallback when Ivy unavailable).
+QUERY is the search query.
+LIMIT is the maximum number of results."
+  (let ((query (or query (emacs-rag--read-query "Search org headings: "))))
+    (let* ((response (emacs-rag--request "GET" "/search/org-headings" nil
                                         `((query . ,query)
                                           (limit . ,limit))))
            (results (alist-get 'results response))
@@ -349,12 +401,9 @@ If region is active, use it as the default query."
                                                 basename)))
                             (cons display result)))
                         results))
-               (selected (if (fboundp 'ivy-read)
-                            (ivy-read (format "Org headings for '%s' (%d results): " query count)
-                                     (mapcar #'car candidates))
-                          (completing-read (format "Org headings for '%s' (%d results): " query count)
-                                          (mapcar #'car candidates)
-                                          nil t)))
+               (selected (completing-read (format "Org headings for '%s' (%d results): " query count)
+                                         (mapcar #'car candidates)
+                                         nil t))
                (choice (cdr (assoc selected candidates))))
           (when choice
             (let ((file (alist-get 'source_path choice))
