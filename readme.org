@@ -22,11 +22,12 @@ Traditional text search finds what you *type*. Semantic search finds what you *m
 
 * Features
 
-** 🔍 Semantic Vector Search
+** 🔍 Multiple Search Modes
 
-- *Vector Embeddings*: Documents are converted to high-dimensional vectors that capture semantic meaning
-- *Cosine Similarity*: Find documents by conceptual similarity, not just keyword matching
-- *Fast Retrieval*: Efficient vector indexing using LibSQL with vector extension support
+- *Vector Search*: Semantic similarity using embeddings for conceptual matching
+- *Full-Text Search*: Fast FTS5-powered keyword search with BM25 ranking
+- *Hybrid Search*: Combines vector and full-text search with configurable weighting
+- *Org Heading Navigation*: Jump directly to any org heading across all indexed files
 - *Configurable Models*: Choose from multiple embedding models based on your needs
 
 ** 🎯 Two-Stage Reranking
@@ -101,7 +102,8 @@ All aspects are configurable through environment variables or Emacs customizatio
 │              Python FastAPI Server                   │
 │  ┌──────────────────────────────────────────────┐  │
 │  │              API Routes                       │  │
-│  │  /index  /search/vector  /files  /stats      │  │
+│  │  /index  /search/vector  /search/text        │  │
+│  │  /search/hybrid  /org-headings  /files       │  │
 │  └──────────────────────────────────────────────┘  │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────┐  │
 │  │ File Service │  │Search Service│  │   Stats  │  │
@@ -236,7 +238,7 @@ Add to your Emacs configuration:
 #+end_src
 
 #+RESULTS:
-: [nil 26849 43594 138510 nil #[nil ((if (emacs-rag-server-running-p) (message "Emacs RAG server started successfully") (message "Warning: Server may not have started properly"))) (t)] nil nil 0 nil]
+: [nil 26849 45728 909814 nil #[nil ((if (emacs-rag-server-running-p) (message "Emacs RAG server started successfully") (message "Warning: Server may not have started properly"))) (t)] nil nil 0 nil]
 
 * Quick Start Guide
 
@@ -292,13 +294,24 @@ Results will be displayed with scores. Select one to navigate directly to that l
 
 ** 4. Other Useful Commands
 
-*** Search Word at Point
+*** Search with Selected Text
+
+All search commands (vector, text, hybrid) automatically use selected region as the query:
 
 #+begin_src emacs-lisp
-M-x emacs-rag-search-at-point
+;; Select text, then:
+M-x emacs-rag-search-vector    ; Semantic search
+M-x emacs-rag-search-text      ; Keyword search
+M-x emacs-rag-search-hybrid    ; Combined search
 #+end_src
 
-Searches for the word under cursor or selected region.
+*** Jump to Org Headings
+
+#+begin_src emacs-lisp
+M-x emacs-rag-jump-to-org-heading
+#+end_src
+
+Browse all org headings from indexed files with instant navigation.
 
 *** View Statistics
 
@@ -567,21 +580,25 @@ Health check.
 
 *** Search
 
-| Command                              | Description                     |
-|--------------------------------------+---------------------------------|
-| =emacs-rag-search-vector=            | Semantic vector search          |
-| =emacs-rag-search-at-point=          | Search word/region at point     |
-| =emacs-rag-search-vector-with-history= | Search with query history     |
-| =emacs-rag-stats=                    | Show database statistics        |
+| Command                         | Description                                |
+|---------------------------------+--------------------------------------------|
+| =emacs-rag-search-vector=       | Semantic vector search (uses region)       |
+| =emacs-rag-search-text=         | Full-text FTS5 search (uses region)        |
+| =emacs-rag-search-hybrid=       | Hybrid vector + text search (uses region)  |
+| =emacs-rag-jump-to-org-heading= | Navigate to any org heading                |
+| =emacs-rag-open-indexed-file=   | Browse and open indexed files              |
+| =emacs-rag-stats=               | Show database statistics                   |
 
 *** Utilities
 
-| Command                    | Description                     |
-|----------------------------+---------------------------------|
-| =emacs-rag-menu=           | Open transient menu             |
-| =emacs-rag-debug=          | Show debug information          |
-| =emacs-rag-quick-start=    | Show quick start guide          |
-| =emacs-rag-delete-database=| Delete entire database          |
+| Command                      | Description                          |
+|------------------------------+--------------------------------------|
+| =emacs-rag-menu=             | Open transient menu                  |
+| =emacs-rag-debug=            | Show debug information               |
+| =emacs-rag-quick-start=      | Show quick start guide               |
+| =emacs-rag-delete-database=  | Delete entire database               |
+| =emacs-rag-rebuild-database= | Rebuild database with new schema     |
+| =emacs-rag-rebuild-fts-index=| Rebuild FTS5 index from documents    |
 
 * Advanced Usage
 
