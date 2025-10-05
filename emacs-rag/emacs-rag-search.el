@@ -313,6 +313,57 @@ gets out of sync with the documents table."
               (forward-line (1- line))
               (recenter))))))))
 
+(defun emacs-rag-search-org-headings (query &optional limit)
+  "Perform semantic search on org headings using QUERY.
+LIMIT is the maximum number of results (defaults to 20).
+
+With prefix argument, prompt for limit.
+If region is active, use it as the default query."
+  (interactive (list (if (use-region-p)
+                         (buffer-substring-no-properties (region-beginning) (region-end))
+                       (emacs-rag--read-query "Search org headings: "))
+                     (when current-prefix-arg
+                       (read-number "Number of results: " 20))))
+  (if (not (emacs-rag-server-running-p))
+      (user-error "Server is not running. Start it first with `emacs-rag-start-server'")
+    (let* ((limit (or limit 20))
+           (response (emacs-rag--request "GET" "/search/org-headings" nil
+                                        `((query . ,query)
+                                          (limit . ,limit))))
+           (results (alist-get 'results response))
+           (count (alist-get 'count response)))
+      (if (zerop count)
+          (message "No matching org headings found for: %s" query)
+        (let* ((candidates
+                (mapcar (lambda (result)
+                          (let* ((text (alist-get 'heading_text result))
+                                 (tags (alist-get 'tags result))
+                                 (path (alist-get 'source_path result))
+                                 (line (alist-get 'line_number result))
+                                 (score (alist-get 'score result))
+                                 (basename (file-name-nondirectory path))
+                                 (display (format "%.3f  %-40s | %-15s | %s"
+                                                score
+                                                (truncate-string-to-width text 40 nil nil "...")
+                                                (or tags "")
+                                                basename)))
+                            (cons display result)))
+                        results))
+               (selected (if (fboundp 'ivy-read)
+                            (ivy-read (format "Org headings for '%s' (%d results): " query count)
+                                     (mapcar #'car candidates))
+                          (completing-read (format "Org headings for '%s' (%d results): " query count)
+                                          (mapcar #'car candidates)
+                                          nil t)))
+               (choice (cdr (assoc selected candidates))))
+          (when choice
+            (let ((file (alist-get 'source_path choice))
+                  (line (alist-get 'line_number choice)))
+              (find-file file)
+              (goto-char (point-min))
+              (forward-line (1- line))
+              (recenter))))))))
+
 ;;; Search at Point
 
 (defun emacs-rag-search-at-point ()

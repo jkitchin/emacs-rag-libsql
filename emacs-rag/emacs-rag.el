@@ -56,7 +56,7 @@
     ("v" "Vector search" emacs-rag-search-vector)
     ("t" "Text search" emacs-rag-search-text)
     ("y" "Hybrid search" emacs-rag-search-hybrid)
-    ("h" "Jump to org heading" emacs-rag-jump-to-org-heading)
+    ("h" "Search org headings" emacs-rag-search-org-headings)
     ("F" "Open indexed file" emacs-rag-open-indexed-file)]
    ["Server"
     ("a" "Start server" emacs-rag-start-server)

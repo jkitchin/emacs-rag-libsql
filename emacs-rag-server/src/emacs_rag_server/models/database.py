@@ -98,6 +98,26 @@ def init_schema() -> None:
         "CREATE INDEX IF NOT EXISTS idx_org_headings_path ON org_headings(source_path)"
     )
 
+    # Create org heading embeddings table for semantic search
+    client.execute("""
+        CREATE TABLE IF NOT EXISTS org_heading_embeddings (
+            heading_id INTEGER PRIMARY KEY,
+            vector BLOB NOT NULL,
+            model TEXT NOT NULL,
+            created_at INTEGER DEFAULT (strftime('%s', 'now')),
+            FOREIGN KEY (heading_id) REFERENCES org_headings(id) ON DELETE CASCADE
+        )
+    """)
+
+    # Create vector index for org heading cosine similarity search
+    try:
+        client.execute(
+            "CREATE INDEX IF NOT EXISTS idx_org_heading_embeddings_vector ON org_heading_embeddings(vector) USING vector_cosine"
+        )
+    except Exception:
+        # Vector extension may not be available, index will be created without optimization
+        pass
+
 
 def add_documents(
     *,
@@ -643,7 +663,7 @@ def rebuild_fts_index() -> int:
 
 def add_org_headings(path: str, content: str) -> int:
     """
-    Extract and store org headings from file content.
+    Extract and store org headings from file content with embeddings.
 
     Args:
         path: Absolute file path
@@ -658,6 +678,10 @@ def add_org_headings(path: str, content: str) -> int:
         return 0
 
     client = get_client()
+    settings = get_settings()
+
+    # Import embedding model (lazy import to avoid circular dependency)
+    from ..models.embeddings import get_embedding_model
 
     # Delete existing headings for this file
     client.execute("DELETE FROM org_headings WHERE source_path = ?", [path])
@@ -665,7 +689,7 @@ def add_org_headings(path: str, content: str) -> int:
     # Parse org headings
     heading_pattern = re.compile(r'^(\*+)\s+(.+?)(?:\s+(:[a-zA-Z0-9_@:]+:))?\s*$')
     lines = content.split('\n')
-    headings_added = 0
+    headings_data = []
 
     for line_num, line in enumerate(lines, 1):
         match = heading_pattern.match(line)
@@ -675,14 +699,52 @@ def add_org_headings(path: str, content: str) -> int:
             tags = match.group(3).strip() if match.group(3) else None
             level = len(stars)
 
-            client.execute("""
-                INSERT OR REPLACE INTO org_headings
-                (source_path, line_number, heading_text, tags, level)
-                VALUES (?, ?, ?, ?, ?)
-            """, [path, line_num, heading_text, tags, level])
-            headings_added += 1
+            headings_data.append({
+                'line_num': line_num,
+                'heading_text': heading_text,
+                'tags': tags,
+                'level': level
+            })
 
-    return headings_added
+    if not headings_data:
+        return 0
+
+    # Insert headings and get their IDs
+    embedding_model = get_embedding_model()
+    heading_texts = []
+    heading_ids = []
+
+    for heading in headings_data:
+        # Insert heading and get the ID
+        result = client.execute("""
+            INSERT INTO org_headings
+            (source_path, line_number, heading_text, tags, level)
+            VALUES (?, ?, ?, ?, ?)
+            RETURNING id
+        """, [path, heading['line_num'], heading['heading_text'],
+              heading['tags'], heading['level']])
+
+        heading_id = result.rows[0][0]
+        heading_ids.append(heading_id)
+
+        # Prepare text for embedding: combine heading text with tags if present
+        text_to_embed = heading['heading_text']
+        if heading['tags']:
+            text_to_embed = f"{heading['heading_text']} {heading['tags']}"
+        heading_texts.append(text_to_embed)
+
+    # Generate embeddings in batch
+    embeddings = embedding_model.embed_documents(heading_texts)
+
+    # Store embeddings
+    for heading_id, embedding in zip(heading_ids, embeddings):
+        vector_bytes = struct.pack(f'{len(embedding)}f', *embedding)
+        client.execute("""
+            INSERT INTO org_heading_embeddings (heading_id, vector, model)
+            VALUES (?, ?, ?)
+        """, [heading_id, vector_bytes, settings.embedding_model])
+
+    return len(headings_data)
 
 
 def get_all_org_headings() -> List[Dict[str, Any]]:
@@ -708,5 +770,85 @@ def get_all_org_headings() -> List[Dict[str, Any]]:
             'tags': row[3],
             'level': row[4]
         })
+
+    return headings
+
+
+def query_org_headings_by_vector(query_embedding: List[float], *, n_results: int = 20) -> List[Dict[str, Any]]:
+    """
+    Perform vector similarity search on org headings.
+
+    Args:
+        query_embedding: Query embedding vector
+        n_results: Maximum number of results to return
+
+    Returns:
+        List of dictionaries with heading information and similarity scores
+    """
+    client = get_client()
+    vector_bytes = struct.pack(f'{len(query_embedding)}f', *query_embedding)
+
+    try:
+        # Try using vector_distance_cosine function if available
+        result = client.execute("""
+            SELECT
+                h.source_path,
+                h.line_number,
+                h.heading_text,
+                h.tags,
+                h.level,
+                vector_distance_cosine(e.vector, ?) as distance
+            FROM org_headings h
+            JOIN org_heading_embeddings e ON h.id = e.heading_id
+            ORDER BY distance ASC
+            LIMIT ?
+        """, [vector_bytes, n_results])
+
+        # Format results
+        headings = []
+        for row in result.rows:
+            headings.append({
+                'source_path': row[0],
+                'line_number': row[1],
+                'heading_text': row[2],
+                'tags': row[3],
+                'level': row[4],
+                'score': 1.0 - row[5]  # Convert distance to similarity score
+            })
+
+    except Exception:
+        # Fallback: manual cosine distance calculation
+        result = client.execute("""
+            SELECT
+                h.source_path,
+                h.line_number,
+                h.heading_text,
+                h.tags,
+                h.level,
+                e.vector
+            FROM org_headings h
+            JOIN org_heading_embeddings e ON h.id = e.heading_id
+        """)
+
+        # Calculate cosine distances in Python
+        headings_with_distance = []
+        for row in result.rows:
+            stored_vector = struct.unpack(f'{len(query_embedding)}f', row[5])
+            # Cosine similarity (assuming normalized vectors)
+            dot_product = sum(a * b for a, b in zip(query_embedding, stored_vector))
+            similarity = dot_product
+
+            headings_with_distance.append({
+                'source_path': row[0],
+                'line_number': row[1],
+                'heading_text': row[2],
+                'tags': row[3],
+                'level': row[4],
+                'score': similarity
+            })
+
+        # Sort by similarity (descending) and limit
+        headings_with_distance.sort(key=lambda x: x['score'], reverse=True)
+        headings = headings_with_distance[:n_results]
 
     return headings

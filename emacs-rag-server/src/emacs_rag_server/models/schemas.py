@@ -75,3 +75,19 @@ class OrgHeadingsResponse(BaseModel):
     """Response schema for org headings list."""
     headings: List[OrgHeading]
     count: int
+
+
+class OrgHeadingSearchResult(BaseModel):
+    """Single org heading search result with similarity score."""
+    source_path: str
+    line_number: int
+    heading_text: str
+    tags: Optional[str] = None
+    level: int
+    score: float
+
+
+class OrgHeadingSearchResponse(BaseModel):
+    """Response schema for org heading semantic search."""
+    results: List[OrgHeadingSearchResult]
+    count: int

@@ -13,16 +13,19 @@ from ..models.schemas import (
     IndexResponse,
     OrgHeading,
     OrgHeadingsResponse,
+    OrgHeadingSearchResult,
+    OrgHeadingSearchResponse,
     RebuildFtsResponse,
     SearchResponse,
     SearchResult,
     StatsResponse,
 )
-from ..models.database import get_all_indexed_files, get_all_org_headings, rebuild_fts_index
+from ..models.database import get_all_indexed_files, get_all_org_headings, query_org_headings_by_vector, rebuild_fts_index
 from ..services.file_service import delete_file, index_file
 from ..services.search_service import hybrid_search, text_search, vector_search
 from ..services.stats_service import database_stats
 from ..utils.config import get_settings
+from ..models.embeddings import get_embedding_model
 
 router = APIRouter()
 
@@ -87,6 +90,10 @@ async def home():
 
         <div class="endpoint">
             <strong>GET /search/hybrid</strong> - Hybrid search combining vector and full-text
+        </div>
+
+        <div class="endpoint">
+            <strong>GET /search/org-headings</strong> - Semantic search for org headings
         </div>
 
         <div class="endpoint">
@@ -317,3 +324,31 @@ async def list_org_headings_endpoint():
         return OrgHeadingsResponse(headings=headings, count=len(headings))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list org headings: {str(e)}")
+
+
+@router.get("/search/org-headings", response_model=OrgHeadingSearchResponse)
+async def search_org_headings_endpoint(
+    query: str = Query(..., description="Semantic search query for org headings"),
+    limit: int = Query(20, ge=1, le=100, description="Maximum number of results")
+):
+    """
+    Semantic search for org headings using vector similarity.
+
+    - **query**: Search query text (e.g., "machine learning papers", "code examples")
+    - **limit**: Maximum number of results (1-100)
+
+    Returns list of matching org headings ranked by semantic similarity.
+    """
+    try:
+        # Generate query embedding
+        embedding_model = get_embedding_model()
+        query_embedding = embedding_model.embed_query(query)
+
+        # Search headings by vector similarity
+        results_data = query_org_headings_by_vector(query_embedding, n_results=limit)
+
+        # Format results
+        results = [OrgHeadingSearchResult(**r) for r in results_data]
+        return OrgHeadingSearchResponse(results=results, count=len(results))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Org heading search failed: {str(e)}")
